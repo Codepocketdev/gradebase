@@ -15,40 +15,43 @@ export default function AppRoot() {
   const [user, setUser]               = useState(null)
   const [syncState, setSyncState]     = useState('idle')   // idle | syncing | synced | error
   const [dataVersion, setDataVersion] = useState(0)
-  const [splashTarget, setSplashTarget] = useState('auth')        // bumps on every live update → App re-renders
+  // splashDone: true once the 5s animation finishes
+  // initTarget: where to go after splash — set by init()
+  const [splashDone, setSplashDone]   = useState(false)
+  const [initTarget, setInitTarget]   = useState(null)
 
-  // ── On mount: check persisted session, always show splash 4s ──────
+  // ── On mount: check persisted session ─────────────────────────────
   useEffect(() => {
     const init = async () => {
       const stored = localStorage.getItem('gb_auth')
-      let validSession = false
+      let target = 'auth'
 
       if (stored) {
         try {
           const parsed = JSON.parse(stored)
           if (parsed?.nsec && parsed?.npub && parsed?.role) {
-            // Re-check role in DB
             let role = await detectRole(parsed.npub)
-
-            // Admin can always recover — their nsec IS the school identity
-            // Even if DB was wiped, we trust the nsec and re-fetch from Nostr
             if (!role && parsed.role === 'admin') role = 'admin'
-
             if (role) {
               setUser({ ...parsed, role })
-              validSession = true
+              target = 'app'
             }
           }
         } catch {}
       }
 
-      // Splash calls onDone() when its animation finishes (~5s)
-      // We store the target phase so onDone knows where to go
-      setSplashTarget(validSession ? 'app' : 'auth')
+      setInitTarget(target)
     }
 
     init()
   }, [])
+
+  // ── When BOTH init and splash are done, transition ─────────────────
+  useEffect(() => {
+    if (splashDone && initTarget) {
+      setPhase(initTarget)
+    }
+  }, [splashDone, initTarget])
 
   // ── Start Nostr sync when entering app ────────────────────────────
   useEffect(() => {
@@ -114,7 +117,7 @@ export default function AppRoot() {
   }, [])
 
   // ── Render ─────────────────────────────────────────────────────────
-  if (phase === 'splash') return <Splash onDone={() => setPhase(splashTarget)} />
+  if (phase === 'splash') return <Splash onDone={() => setSplashDone(true)} />
   if (phase === 'auth')   return <Auth onAuth={handleAuth} />
 
   return (
