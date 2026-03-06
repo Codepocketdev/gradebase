@@ -1,0 +1,37 @@
+.page { padding: 16px; position: relative; z-index: 1; }
+.topRow { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+.chartsRow { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.summaryPanel, .exportPanel, .chartPanel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; overflow: hidden;
+}
+.panelHeader { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.panelTitle { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.summaryBody { padding: 20px; }
+.schoolTitle { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
+.summaryDate { font-size: 12px; color: var(--muted); font-family: var(--font-mono); margin-bottom: 16px; }
+.divider { height: 1px; background: var(--border); margin: 12px 0; }
+.summaryRow { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 14px; }
+.bold { font-weight: 700; }
+.incomeVal { color: var(--income); font-family: var(--font-mono); font-weight: 600; }
+.expenseVal { color: var(--expense); font-family: var(--font-mono); font-weight: 600; }
+.balanceChip { display: inline-block; margin-top: 14px; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; }
+.exportBody { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.exportBtn {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 12px; cursor: pointer; transition: all 0.15s;
+  text-align: left; width: 100%; color: var(--text);
+}
+.exportBtn:hover { border-color: var(--accent); transform: translateX(2px); }
+.exportIcon { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; }
+.exportLabel { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+.exportSub { font-size: 11px; color: var(--muted); }
+.empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
+
+@media (max-width: 768px) {
+  .page { padding: 12px; }
+  .topRow { grid-template-columns: 1fr; }
+  .chartsRow { grid-template-columns: 1fr; }
+}

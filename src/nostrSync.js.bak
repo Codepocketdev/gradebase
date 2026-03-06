@@ -1,0 +1,479 @@
+/**
+ * GradeBase Nostr Sync Engine v2
+ * ──────────────────────────────
+ * All events are kind:1 (universally supported by all relays).
+ * Events are tagged for fast lookup:
+ *
+ *   ["t", "gradebase"]              ← all app events
+ *   ["t", "gradebase-school"]       ← admin: school identity
+ *   ["t", "gradebase-teachers"]     ← admin: encrypted teacher list
+ *   ["t", "gradebase-classes"]      ← teacher: encrypted class+student list
+ *   ["t", "gradebase-payments"]     ← admin: encrypted payment records
+ *
+ * Encryption: NIP-04, each publisher encrypts to their OWN pubkey.
+ *   Admin encrypts teachers/payments with their own keypair.
+ *   Teacher encrypts classes/students with their own keypair.
+ *
+ * Publishers:
+ *   Admin   → school, teachers, payments
+ *   Teacher → classes (includes students)
+ *
+ * Fetch strategy:
+ *   Admin login   → fetch by adminNpub + tags
+ *   Teacher login → fetch admin's events (school, teachers to verify)
+ *                   + teacher's own class events
+ *   Student login → fetch teacher's class events to verify enrollment
+ */
+
+import { SimplePool }                    from 'nostr-tools/pool'
+import { nip04 }                         from 'nostr-tools/nip04'
+import { nip19, getPublicKey, finalizeEvent } from 'nostr-tools'
+import {
+  saveSchool,
+  replaceAllTeachers,
+  replaceAllClasses,
+  replaceAllPayments,
+  getTeachers,
+  getClasses,
+  getPayments,
+} from './db'
+
+// ── Relays ────────────────────────────────────────────────────────────
+export const RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.nostr.band',
+  'wss://relay.primal.net',
+]
+
+// ── Tags ──────────────────────────────────────────────────────────────
+export const TAG = {
+  SCHOOL:   'gradebase-school',
+  TEACHERS: 'gradebase-teachers',
+  CLASSES:  'gradebase-classes',
+  PAYMENTS: 'gradebase-payments',
+}
+
+// ── State ─────────────────────────────────────────────────────────────
+let _pool      = null
+let _sub       = null
+let _userNsec  = null   // current logged-in user's nsec
+let _userPk    = null   // current logged-in user's hex pubkey
+let _adminPk   = null   // school admin's hex pubkey (may differ from _userPk for teachers)
+
+function pool() {
+  if (!_pool) _pool = new SimplePool()
+  return _pool
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+export function skFromNsec(nsec) {
+  const decoded = nip19.decode(nsec)
+  return decoded.data  // Uint8Array
+}
+
+export function pkFromNsec(nsec) {
+  return getPublicKey(skFromNsec(nsec))
+}
+
+// Encrypt payload to publisher's OWN pubkey (self-encrypt)
+async function encrypt(nsec, pk, payload) {
+  const sk = skFromNsec(nsec)
+  return nip04.encrypt(sk, pk, JSON.stringify(payload))
+}
+
+// Decrypt self-encrypted payload
+async function decrypt(nsec, pk, ciphertext) {
+  const sk = skFromNsec(nsec)
+  const plaintext = await nip04.decrypt(sk, pk, ciphertext)
+  return JSON.parse(plaintext)
+}
+
+// Build & sign a kind:1 event
+function makeEvent(nsec, content, tags) {
+  const sk = skFromNsec(nsec)
+  return finalizeEvent(
+    {
+      kind:       1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags:       [['t', 'gradebase'], ...tags],
+      content,
+    },
+    sk
+  )
+}
+
+// Publish to all relays, return true if at least one accepts
+async function publish(event) {
+  const results = await Promise.allSettled(pool().publish(RELAYS, event))
+  const ok = results.some(r => r.status === 'fulfilled')
+  console.log(`[nostrSync] publish kind:1 tag:${event.tags.find(t=>t[0]==='t'&&t[1]!=='gradebase')?.[1]} → ${ok ? '✓ OK' : '✗ FAILED'}`)
+  return ok
+}
+
+// ── Process incoming event → decrypt → write DB ───────────────────────
+async function handleEvent(event, nsec, onUpdate) {
+  const tag = event.tags.find(t => t[0] === 't' && t[1].startsWith('gradebase-'))?.[1]
+  if (!tag) return
+
+  try {
+    switch (tag) {
+
+      case TAG.SCHOOL: {
+        // School event is unencrypted JSON
+        const data = JSON.parse(event.content)
+        await saveSchool({
+          adminNpub:  nip19.npubEncode(event.pubkey),
+          adminName:  data.adminName,
+          schoolName: data.name,
+          about:      data.about || '',
+          avatar:     data.avatar || '',
+          createdAt:  data.createdAt,
+        })
+        onUpdate('school')
+        break
+      }
+
+      case TAG.TEACHERS: {
+        // Encrypted by admin to admin's own pubkey
+        const teachers = await decrypt(nsec, event.pubkey, event.content)
+        await replaceAllTeachers(teachers)
+        onUpdate('teachers')
+        break
+      }
+
+      case TAG.CLASSES: {
+        // Encrypted by teacher to teacher's own pubkey
+        const classes = await decrypt(nsec, event.pubkey, event.content)
+        await replaceAllClasses(classes)
+        onUpdate('classes')
+        break
+      }
+
+      case TAG.PAYMENTS: {
+        // Encrypted by admin to admin's own pubkey
+        const payments = await decrypt(nsec, event.pubkey, event.content)
+        await replaceAllPayments(payments)
+        onUpdate('payments')
+        break
+      }
+    }
+  } catch (err) {
+    console.warn(`[nostrSync] handleEvent error for tag:${tag}`, err)
+  }
+}
+
+// ── START SYNC ────────────────────────────────────────────────────────
+/**
+ * Opens persistent WebSocket subscription after login.
+ *
+ * @param {string}   userNsec   logged-in user's nsec
+ * @param {string}   userPk     logged-in user's hex pubkey
+ * @param {string}   adminPk    school admin's hex pubkey
+ * @param {string}   role       'admin' | 'teacher' | 'student'
+ * @param {function} onUpdate   called with type on every DB write
+ */
+export function startSync(userNsec, userPk, adminPk, role, onUpdate) {
+  stopSync()
+
+  _userNsec = userNsec
+  _userPk   = userPk
+  _adminPk  = adminPk
+
+  console.log(`[nostrSync] Starting sync — role:${role} adminPk:${adminPk.slice(0,8)}...`)
+
+  // Build filters based on role
+  const filters = []
+
+  // Everyone needs school + teachers from admin
+  filters.push({
+    kinds:   [1],
+    authors: [adminPk],
+    '#t':    ['gradebase-school', 'gradebase-teachers'],
+  })
+
+  if (role === 'admin') {
+    // Admin also wants their own payments
+    filters.push({
+      kinds:   [1],
+      authors: [adminPk],
+      '#t':    ['gradebase-payments'],
+    })
+  }
+
+  if (role === 'admin' || role === 'teacher') {
+    // Teachers publish classes — admin wants all teachers' classes
+    // Teacher wants their own classes
+    const classAuthors = role === 'admin' ? [adminPk] : [userPk]
+    filters.push({
+      kinds:   [1],
+      authors: role === 'teacher' ? [userPk] : [adminPk],
+      '#t':    ['gradebase-classes'],
+    })
+  }
+
+  const latest = {}  // dedupe by tag
+
+  _sub = pool().subscribe(RELAYS, filters, {
+    async onevent(event) {
+      const tag = event.tags.find(t => t[0] === 't' && t[1].startsWith('gradebase-'))?.[1]
+      if (!tag) return
+
+      // Use pubkey+tag as dedupe key — keep newest per publisher per tag
+      const key = `${event.pubkey}:${tag}`
+      if (latest[key] && latest[key] >= event.created_at) return
+      latest[key] = event.created_at
+
+      // Use correct nsec for decryption — event author's key
+      // For own events: use _userNsec. For others we only read unencrypted (school).
+      const nsecForDecrypt = (event.pubkey === _userPk) ? _userNsec
+                           : (tag === TAG.SCHOOL)       ? null   // unencrypted
+                           : _userNsec                           // try user's nsec
+
+      await handleEvent(event, nsecForDecrypt, onUpdate)
+    },
+
+    oneose() {
+      console.log('[nostrSync] ✓ Historical events loaded — live streaming')
+      onUpdate('ready')
+    },
+
+    onclose(reasons) {
+      console.warn('[nostrSync] Relay closed:', reasons)
+    },
+  })
+}
+
+// ── STOP SYNC ─────────────────────────────────────────────────────────
+export function stopSync() {
+  if (_sub) {
+    try { _sub.close() } catch {}
+    _sub = null
+  }
+  _userNsec = null
+  _userPk   = null
+  _adminPk  = null
+  console.log('[nostrSync] Sync stopped')
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PUBLISH FUNCTIONS
+// Each publishes kind:1 with the right tag
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Admin publishes school identity (unencrypted kind:1)
+ * Also publishes kind:0 for Nostr profile
+ */
+export async function publishSchool(adminNsec, schoolData) {
+  const sk = skFromNsec(adminNsec)
+  const pk = getPublicKey(sk)
+
+  // kind:1 school event (unencrypted, readable by anyone)
+  const schoolEvent = makeEvent(adminNsec, JSON.stringify({
+    name:      schoolData.schoolName,
+    adminName: schoolData.adminName,
+    about:     schoolData.about || '',
+    avatar:    schoolData.avatar || '',
+    app:       'gradebase',
+    createdAt: schoolData.createdAt || Date.now(),
+  }), [['t', TAG.SCHOOL]])
+
+  // kind:0 Nostr metadata (standard profile, shows avatar on Nostr clients)
+  const profileEvent = finalizeEvent({
+    kind:       0,
+    created_at: Math.floor(Date.now() / 1000),
+    tags:       [],
+    content:    JSON.stringify({
+      name:    schoolData.adminName,
+      about:   schoolData.about || `Admin of ${schoolData.schoolName} on GradeBase`,
+      picture: schoolData.avatar || '',
+      website: 'https://gradebase.app',
+      nip05:   '',
+    }),
+  }, sk)
+
+  const [r1, r2] = await Promise.all([
+    Promise.allSettled(pool().publish(RELAYS, schoolEvent)),
+    Promise.allSettled(pool().publish(RELAYS, profileEvent)),
+  ])
+
+  const ok = [...r1, ...r2].some(r => r.status === 'fulfilled')
+  console.log('[nostrSync] publishSchool + kind:0:', ok ? '✓' : '✗')
+  return ok
+}
+
+/**
+ * Admin publishes encrypted teacher list
+ */
+export async function publishTeachers(adminNsec, teachers) {
+  const pk         = pkFromNsec(adminNsec)
+  const ciphertext = await encrypt(adminNsec, pk, teachers)
+  const event      = makeEvent(adminNsec, ciphertext, [['t', TAG.TEACHERS]])
+  return publish(event)
+}
+
+/**
+ * Teacher publishes encrypted class+student list
+ */
+export async function publishClasses(teacherNsec, classes) {
+  const pk         = pkFromNsec(teacherNsec)
+  const ciphertext = await encrypt(teacherNsec, pk, classes)
+  const event      = makeEvent(teacherNsec, ciphertext, [['t', TAG.CLASSES]])
+  return publish(event)
+}
+
+/**
+ * Admin publishes encrypted payment records
+ */
+export async function publishPayments(adminNsec, payments) {
+  const pk         = pkFromNsec(adminNsec)
+  const ciphertext = await encrypt(adminNsec, pk, payments)
+  const event      = makeEvent(adminNsec, ciphertext, [['t', TAG.PAYMENTS]])
+  return publish(event)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SYNC WRAPPERS — what components call
+// read DB → merge → write DB → publish
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function syncAddTeacher(adminNsec, teacher) {
+  const existing = await getTeachers()
+  const updated  = [...existing.filter(t => t.npub !== teacher.npub), teacher]
+  await replaceAllTeachers(updated)
+  return publishTeachers(adminNsec, updated)
+}
+
+export async function syncRemoveTeacher(adminNsec, npub) {
+  const existing = await getTeachers()
+  const updated  = existing.filter(t => t.npub !== npub)
+  await replaceAllTeachers(updated)
+  return publishTeachers(adminNsec, updated)
+}
+
+export async function syncSaveClass(teacherNsec, cls) {
+  const existing = await getClasses()
+  const updated  = [...existing.filter(c => c.id !== cls.id), cls]
+  await replaceAllClasses(updated)
+  return publishClasses(teacherNsec, updated)
+}
+
+export async function syncDeleteClass(teacherNsec, classId) {
+  const existing = await getClasses()
+  const updated  = existing.filter(c => c.id !== classId)
+  await replaceAllClasses(updated)
+  return publishClasses(teacherNsec, updated)
+}
+
+export async function syncSavePayment(adminNsec, payment) {
+  const existing = await getPayments()
+  const updated  = [...existing.filter(p => p.id !== payment.id), payment]
+  await replaceAllPayments(updated)
+  return publishPayments(adminNsec, updated)
+}
+
+export async function syncDeletePayment(adminNsec, paymentId) {
+  const existing = await getPayments()
+  const updated  = existing.filter(p => p.id !== paymentId)
+  await replaceAllPayments(updated)
+  return publishPayments(adminNsec, updated)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FETCH & SEED — one-shot for fresh device login
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fetches and seeds IndexedDB from Nostr on first login.
+ *
+ * Admin login:
+ *   fetchAndSeed({ role:'admin', userNsec, userPk })
+ *
+ * Teacher login:
+ *   fetchAndSeed({ role:'teacher', userNsec, userPk, adminNpub })
+ *   → fetches school+teachers from admin to verify teacher exists
+ *   → fetches teacher's own classes
+ *
+ * Student login:
+ *   fetchAndSeed({ role:'student', userNsec, userPk, teacherNpub })
+ *   → fetches teacher's classes to verify student exists
+ *
+ * @returns {{ found: boolean, role?: string, name?: string }}
+ */
+export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherNpub }) {
+  try {
+    const filters = []
+
+    if (role === 'admin') {
+      // Admin: fetch all their own events
+      filters.push({
+        kinds: [1], authors: [userPk],
+        '#t':  ['gradebase-school', 'gradebase-teachers', 'gradebase-classes', 'gradebase-payments'],
+      })
+    }
+
+    if (role === 'teacher') {
+      if (!adminNpub) return { found: false, error: 'School ID required' }
+      const adminPkHex = nip19.decode(adminNpub).data
+      // Fetch school + teacher list from admin
+      filters.push({
+        kinds: [1], authors: [adminPkHex],
+        '#t':  ['gradebase-school', 'gradebase-teachers'],
+      })
+      // Fetch teacher's own classes
+      filters.push({
+        kinds: [1], authors: [userPk],
+        '#t':  ['gradebase-classes'],
+      })
+    }
+
+    if (role === 'student') {
+      if (!teacherNpub) return { found: false, error: 'Teacher ID required' }
+      const teacherPkHex = nip19.decode(teacherNpub).data
+      // Fetch teacher's class list
+      filters.push({
+        kinds: [1], authors: [teacherPkHex],
+        '#t':  ['gradebase-classes'],
+      })
+    }
+
+    if (filters.length === 0) return { found: false }
+
+    console.log('[nostrSync] fetchAndSeed: querying relays...', filters)
+    const events = await pool().querySync(RELAYS, ...filters)
+
+    if (!events || events.length === 0) {
+      console.warn('[nostrSync] fetchAndSeed: no events found')
+      return { found: false }
+    }
+
+    // Dedupe by pubkey+tag, keep newest
+    const latest = {}
+    for (const ev of events) {
+      const tag = ev.tags.find(t => t[0] === 't' && t[1].startsWith('gradebase-'))?.[1]
+      if (!tag) continue
+      const key = `${ev.pubkey}:${tag}`
+      if (!latest[key] || ev.created_at > latest[key].created_at) {
+        latest[key] = ev
+      }
+    }
+
+    // Temporarily set globals for decryption
+    _userNsec = userNsec
+    _userPk   = userPk
+
+    // Process all events
+    for (const ev of Object.values(latest)) {
+      await handleEvent(ev, userNsec, () => {})
+    }
+
+    console.log('[nostrSync] fetchAndSeed: seeded', Object.keys(latest).length, 'event types')
+    return { found: true }
+
+  } catch (err) {
+    console.error('[nostrSync] fetchAndSeed error:', err)
+    return { found: false, error: err.message }
+  }
+}
+

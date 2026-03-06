@@ -1,0 +1,169 @@
+.page {
+  min-height: 100vh; 
+  padding: 24px 24px 40px;
+  display: flex; flex-direction: column; gap: 20px;
+  background: var(--bg);
+  max-width: 480px; margin: 0 auto;
+}
+
+.backBtn {
+  background: none; border: none;
+  color: var(--muted); font-family: var(--font-display);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  align-self: flex-start; padding: 0;
+}
+.backBtn:hover { color: var(--text); }
+
+.top { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+
+.iconWrap {
+  width: 72px; height: 72px;
+  background: rgba(79,255,176,0.07);
+  border: 1px solid rgba(79,255,176,0.15);
+  border-radius: 20px;
+  display: grid; place-items: center;
+  margin-bottom: 4px;
+}
+
+.stepBadge {
+  display: inline-flex; align-self: flex-start;
+  padding: 4px 10px; border-radius: 20px;
+  background: rgba(79,255,176,0.1);
+  color: var(--accent); font-size: 11px; font-weight: 700;
+}
+
+.title {
+  font-size: 26px; font-weight: 800;
+  color: var(--text); line-height: 1.2;
+}
+
+.sub {
+  font-size: 13px; color: var(--muted); line-height: 1.6;
+}
+
+/* Feature cards */
+.cards { display: flex; flex-direction: column; gap: 10px; }
+.featureCard {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 14px 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.featureTitle { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.featureSub { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+/* Role grid */
+.roleSection { display: flex; flex-direction: column; gap: 10px; }
+.roleLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.roleGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.roleBtn {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 14px 8px;
+  background: var(--surface); border: 1.5px solid var(--border);
+  border-radius: 14px; cursor: pointer; transition: all 0.15s;
+}
+.roleBtn:hover { border-color: var(--accent); }
+.roleActive { border-color: var(--accent) !important; background: rgba(79,255,176,0.06) !important; }
+.roleName { font-size: 13px; font-weight: 700; color: var(--text); }
+.roleDesc { font-size: 11px; color: var(--muted); }
+
+/* Key display */
+.keyBox {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 10px;
+}
+.keyLabel { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.keyValue {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--accent); word-break: break-all; line-height: 1.6;
+}
+.keyActions { display: flex; gap: 8px; }
+.keyBtn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: var(--font-display);
+}
+
+.npubBox {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.npubValue { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+/* Warning */
+.warningBox {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px;
+  background: rgba(255,209,102,0.08); border: 1px solid rgba(255,209,102,0.2);
+  border-radius: 12px; font-size: 12px; color: var(--text); line-height: 1.5;
+}
+
+/* Confirm checkbox */
+.confirmRow {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
+}
+.confirmRow input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+
+/* Summary */
+.summaryBox {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden;
+}
+.summaryRow {
+  display: flex; align-items: center; 
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+}
+.summaryRow:last-child { border-bottom: none; }
+.summaryLabel { font-size: 12px; color: var(--muted); font-weight: 600; }
+.summaryVal { font-size: 13px; font-weight: 700; color: var(--text); }
+
+/* Login field */
+.field { display: flex; flex-direction: column; gap: 8px; }
+.fieldLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.inputWrap { position: relative; }
+.input {
+  width: 100%; padding: 12px 44px 12px 14px;
+  background: var(--surface); border: 1.5px solid var(--border);
+  border-radius: 12px; color: var(--text);
+  font-family: var(--font-mono); font-size: 13px; outline: none;
+  transition: border-color 0.15s;
+}
+.input:focus { border-color: var(--accent); }
+.eyeBtn {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  display: grid; place-items: center;
+}
+
+/* Buttons */
+.primaryBtn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px;
+  background: var(--accent); border: none; border-radius: 14px;
+  color: #0d0f14; font-family: var(--font-display);
+  font-size: 15px; font-weight: 800; cursor: pointer;
+  transition: opacity 0.15s;
+}
+.primaryBtn:hover { opacity: 0.9; }
+
+.secondaryBtn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px;
+  background: transparent; border: 1.5px solid var(--border); border-radius: 14px;
+  color: var(--text); font-family: var(--font-display);
+  font-size: 15px; font-weight: 700; cursor: pointer;
+  transition: border-color 0.15s;
+}
+.secondaryBtn:hover { border-color: var(--accent); }
+
+/* Misc */
+.error { font-size: 12px; color: var(--expense); font-weight: 600; }
+.actions { display: flex; flex-direction: column; gap: 10px; margin-top: 0; padding-top: 0; }
+.footer { text-align: center; font-size: 11px; color: var(--muted); margin-top: 8px; }
+.secureNote {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 11px; color: var(--muted);
+}
