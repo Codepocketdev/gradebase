@@ -4,13 +4,16 @@ const syncColor = s => s === 'synced' ? 'var(--income)' : s === 'syncing' ? '#fb
 const syncLabel = s => s === 'synced' ? '● Live' : s === 'syncing' ? '◌ Syncing...' : '○ Offline'
 
 export default function Settings({ user, theme, toggleTheme, syncState, rate, rateLoading, onLogout, onNavigate }) {
+  const isAdmin   = user?.role === 'admin'
+  const isTeacher = user?.role === 'teacher'
+
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4, color: 'var(--text)' }}>Settings</div>
 
-      {/* My Profile — admin only */}
-      {user?.role === 'admin' && (
-        <button style={S.profileBtn} onClick={() => onNavigate('profile')}>
+      {/* Profile button — admin and teacher */}
+      {(isAdmin || isTeacher) && (
+        <button style={S.profileBtn} onClick={() => onNavigate(isAdmin ? 'profile' : 'teacher-profile')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             {user.avatar
               ? <img src={user.avatar} alt="avatar" style={{ width: 48, height: 48, borderRadius: 14, objectFit: 'cover', border: '2px solid var(--accent)' }} />
@@ -21,7 +24,7 @@ export default function Settings({ user, theme, toggleTheme, syncState, rate, ra
               )
             }
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{user?.name || 'Admin'}</div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{user?.name || (isAdmin ? 'Admin' : 'Teacher')}</div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>View & edit your profile</div>
             </div>
           </div>

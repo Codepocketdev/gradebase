@@ -20,6 +20,7 @@ import Reports       from './pages/Reports'
 import Budget        from './pages/Budget'
 import Settings      from './pages/Settings'
 import Profile       from './pages/Profile'
+import TeacherProfile from './pages/TeacherProfile'
 
 // Layout
 import MoreLayout, { MORE_ITEMS } from './layout/MoreLayout'
@@ -34,11 +35,11 @@ const BOTTOM_NAV = [
   { id: 'more',       label: 'More',       icon: MoreHorizontal },
 ]
 
-export default function App({ user, syncState, dataVersion, onLogout }) {
+export default function App({ user, syncState, dataVersion, onLogout, onUpdateUser }) {
   const [page, setPage]         = useState('home')
   const [moreOpen, setMoreOpen] = useState(false)
 
-  const { theme, toggleTheme }          = useTheme()
+  const { theme, toggleTheme }           = useTheme()
   const { fmt, rate, loading: rateLoad } = useCurrency()
   const {
     transactions, schoolName,
@@ -103,6 +104,9 @@ export default function App({ user, syncState, dataVersion, onLogout }) {
 
       case 'profile':
         return <Profile user={user} syncState={syncState} onBack={() => setPage('settings')} />
+
+      case 'teacher-profile':
+        return <TeacherProfile user={user} syncState={syncState} onBack={() => setPage('settings')} onUpdateUser={onUpdateUser} />
 
       case 'settings':
         return (
