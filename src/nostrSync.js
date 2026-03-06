@@ -58,20 +58,19 @@ async function publish(event) {
   catch (e) { console.warn(`[nostrSync] publish ${tag} FAIL`, e); return false }
 }
 
-function fetchEvents(filters, ms = 15000) {
-  return new Promise(resolve => {
-    const out = []
-    const t = setTimeout(() => { try { sub.close() } catch {}; console.warn('[nostrSync] timeout, got', out.length); resolve(out) }, ms)
-    const sub = pool().subscribe(RELAYS, filters, {
-      onevent(ev) {
-        const tag = ev.tags.find(t => t[0]==='t' && t[1]!=='gradebase')?.[1]
-        console.log('[nostrSync] event:', tag, ev.content.slice(0,50))
-        out.push(ev)
-      },
-      oneose() { clearTimeout(t); try { sub.close() } catch {}; console.log('[nostrSync] eose, got', out.length); resolve(out) },
-      onclose() {},
-    })
-  })
+async function fetchEvents(filters, ms = 15000) {
+  try {
+    console.log('[nostrSync] fetchEvents filters:', JSON.stringify(filters))
+    const events = await Promise.race([
+      pool().querySync(RELAYS, ...filters),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+    ])
+    console.log('[nostrSync] fetchEvents got:', events.length)
+    return events
+  } catch (e) {
+    console.warn('[nostrSync] fetchEvents failed:', e.message)
+    return []
+  }
 }
 
 async function handleEvent(ev, onUpdate) {

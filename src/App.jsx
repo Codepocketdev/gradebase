@@ -50,7 +50,6 @@ export default function App({ user, syncState, dataVersion, onLogout }) {
   const userRole = user?.role || 'admin'
   const isAdmin  = userRole === 'admin'
 
-  // Sidebar shows role-filtered More items inline
   const sideMoreItems = MORE_ITEMS.filter(i => i.roles.includes(userRole))
 
   const navigate = (id) => { setPage(id); setMoreOpen(false) }
@@ -60,7 +59,6 @@ export default function App({ user, syncState, dataVersion, onLogout }) {
     setPage(id)
   }
 
-  // ── Page renderer ─────────────────────────────────────────────────
   const renderPage = () => {
     switch (page) {
       case 'home':
@@ -69,7 +67,7 @@ export default function App({ user, syncState, dataVersion, onLogout }) {
       case 'students':
         return userRole === 'student'
           ? <StudentProfile user={user} />
-          : <Students userRole={userRole} dataVersion={dataVersion} />
+          : <Students user={user} userRole={userRole} dataVersion={dataVersion} />
 
       case 'payments':
         return (
@@ -95,7 +93,7 @@ export default function App({ user, syncState, dataVersion, onLogout }) {
         return isAdmin ? <Teachers user={user} dataVersion={dataVersion} /> : null
 
       case 'classes':
-        return <Classes userRole={userRole} dataVersion={dataVersion} />
+        return <Classes user={user} userRole={userRole} dataVersion={dataVersion} />
 
       case 'reports':
         return <Reports transactions={transactions} stats={stats} spentByCategory={spentByCategory} schoolName={schoolName} fmt={fmt} />

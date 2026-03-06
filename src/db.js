@@ -31,31 +31,26 @@ function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
 
     req.onupgradeneeded = (e) => {
-      const db      = e.target.result
-      const oldVer  = e.oldVersion
+      const db     = e.target.result
+      const oldVer = e.oldVersion
 
-      // school — single record keyed by 'main'
       if (!db.objectStoreNames.contains(STORES.SCHOOL)) {
         db.createObjectStore(STORES.SCHOOL)
       }
-      // teachers — list, keyed by npub
       if (!db.objectStoreNames.contains(STORES.TEACHERS)) {
         const s = db.createObjectStore(STORES.TEACHERS, { keyPath: 'npub' })
         s.createIndex('name', 'name', { unique: false })
       }
-      // classes — list, keyed by id
       if (!db.objectStoreNames.contains(STORES.CLASSES)) {
         const cl = db.createObjectStore(STORES.CLASSES, { keyPath: 'id' })
         cl.createIndex('teacherNpub', 'teacherNpub', { unique: false })
       } else if (oldVer < 2) {
-        // v1→v2: add teacherNpub index to existing classes store
         const txn = e.target.transaction
         const cl  = txn.objectStore(STORES.CLASSES)
         if (!cl.indexNames.contains('teacherNpub')) {
           cl.createIndex('teacherNpub', 'teacherNpub', { unique: false })
         }
       }
-      // payments — list, keyed by id
       if (!db.objectStoreNames.contains(STORES.PAYMENTS)) {
         const p = db.createObjectStore(STORES.PAYMENTS, { keyPath: 'id' })
         p.createIndex('studentNpub', 'studentNpub', { unique: false })
@@ -86,10 +81,20 @@ function promisify(req) {
 // ── SCHOOL ────────────────────────────────────────────────────────────
 export async function getSchool() {
   const { store } = await tx(STORES.SCHOOL)
-  return promisify(store.get('main'))
+  const result = await promisify(store.get('main'))
+  // ── Fallback to localStorage if DB is cold (new port / fresh device) ──
+  if (!result) {
+    try {
+      const cached = localStorage.getItem('gb_school_cache')
+      return cached ? JSON.parse(cached) : null
+    } catch { return null }
+  }
+  return result
 }
 
 export async function saveSchool(data) {
+  // ── Also cache in localStorage so session restore works cross-origin ──
+  try { localStorage.setItem('gb_school_cache', JSON.stringify(data)) } catch {}
   const { store } = await tx(STORES.SCHOOL, 'readwrite')
   return promisify(store.put(data, 'main'))
 }
@@ -101,7 +106,6 @@ export async function getTeachers() {
 }
 
 export async function saveTeacher(teacher) {
-  // teacher = { npub, name, classId?, createdAt }
   const { store } = await tx(STORES.TEACHERS, 'readwrite')
   return promisify(store.put(teacher))
 }
@@ -134,7 +138,6 @@ export async function getClasses() {
 }
 
 export async function saveClass(cls) {
-  // cls = { id, name, color, students: [...] }
   const { store } = await tx(STORES.CLASSES, 'readwrite')
   return promisify(store.put(cls))
 }
@@ -186,7 +189,7 @@ export async function replaceAllPayments(payments) {
   })
 }
 
-// ── ROLE DETECTION (used by Auth) ─────────────────────────────────────
+// ── ROLE DETECTION ────────────────────────────────────────────────────
 export async function detectRole(npub) {
   const [school, teachers, classes] = await Promise.all([
     getSchool(),
@@ -194,8 +197,8 @@ export async function detectRole(npub) {
     getClasses(),
   ])
 
-  if (school?.adminNpub === npub)               return 'admin'
-  if (teachers.find(t => t.npub === npub))       return 'teacher'
+  if (school?.adminNpub === npub)                return 'admin'
+  if (teachers.find(t => t.npub === npub))        return 'teacher'
   for (const cls of classes) {
     if (cls.students?.find(s => s.npub === npub)) return 'student'
   }
@@ -223,7 +226,11 @@ export async function getNameForNpub(npub, role) {
 
 // ── CLEAR ALL (logout / factory reset) ───────────────────────────────
 export async function clearAllData() {
-  const db = await openDB()
+  // Clear localStorage caches too
+  localStorage.removeItem('gb_school_cache')
+  localStorage.removeItem('gb_sync_meta')
+
+  const db     = await openDB()
   const stores = Object.values(STORES)
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(stores, 'readwrite')
