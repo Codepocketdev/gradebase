@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
-import { ArrowLeft, Camera, User, School, Zap, Shield, Eye, EyeOff, Copy, Check } from 'lucide-react'
+import { ArrowLeft, Camera, User, School, Zap, Shield, Eye, EyeOff, Copy, Check, Loader } from 'lucide-react'
 import { getSchool, saveSchool } from '../db'
-import { publishSchool } from '../nostrSync'
+import { publishSchool, uploadImage } from '../nostrSync'
 
 const syncColor = s => s === 'synced' ? 'var(--income)' : s === 'syncing' ? '#fbbf24' : '#ef4444'
 const syncLabel = s => s === 'synced' ? '● Live' : s === 'syncing' ? '◌ Syncing...' : '○ Offline'
 
-export default function Profile({ user, syncState, onBack }) {
+const profileStyles = `@keyframes spin { to { transform: rotate(360deg) } }`
+
+export default function Profile({ user, syncState, onBack, onUpdate }) {
   const [school, setSchool]             = useState(null)
   const [displayName, setDisplayName]   = useState(user?.name || '')
   const [about, setAbout]               = useState('')
@@ -16,6 +18,8 @@ export default function Profile({ user, syncState, onBack }) {
   const [copiedNsec, setCopiedNsec]     = useState(false)
   const [saving, setSaving]             = useState(false)
   const [saved, setSaved]               = useState(false)
+  const [uploading, setUploading]       = useState(false)
+  const [uploadError, setUploadError]   = useState('')
   const fileRef = useRef(null)
 
   useEffect(() => {
@@ -23,15 +27,23 @@ export default function Profile({ user, syncState, onBack }) {
       if (!s) return
       setSchool(s)
       setAbout(s.about || '')
+      if (s.avatar) setPreviewAvatar(s.avatar)
     })
   }, [])
 
-  const handleAvatarFile = (e) => {
+  const handleAvatarFile = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = ev => setPreviewAvatar(ev.target.result)
-    reader.readAsDataURL(file)
+    if (file.size > 10 * 1024 * 1024) { setUploadError('Max 10MB'); return }
+    setUploading(true); setUploadError('')
+    try {
+      const url = await uploadImage(user.nsec, file)
+      setPreviewAvatar(url)
+    } catch (err) {
+      setUploadError('Upload failed — check connection')
+      console.error(err)
+    }
+    setUploading(false)
   }
 
   const handleSave = async () => {
@@ -45,6 +57,8 @@ export default function Profile({ user, syncState, onBack }) {
       }
       await saveSchool(updated)
       await publishSchool(user.nsec, updated)
+      // Update parent user state immediately — no need to logout/login
+      if (onUpdate) onUpdate({ ...user, name: updated.adminName, avatar: updated.avatar })
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     } catch (err) { console.error(err) }
@@ -67,6 +81,7 @@ export default function Profile({ user, syncState, onBack }) {
         <ArrowLeft size={16} /> Back to Settings
       </button>
 
+      <style>{profileStyles}</style>
       {/* Avatar + name */}
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
         <div style={{ position: 'relative' }}>
@@ -79,13 +94,17 @@ export default function Profile({ user, syncState, onBack }) {
             )
           }
           <button
-            onClick={() => fileRef.current?.click()}
-            style={{ position: 'absolute', bottom: -4, right: -4, width: 32, height: 32, borderRadius: 10, background: 'var(--accent)', border: '2px solid var(--bg)', display: 'grid', placeItems: 'center', cursor: 'pointer' }}
+            onClick={() => !uploading && fileRef.current?.click()}
+            style={{ position: 'absolute', bottom: -4, right: -4, width: 32, height: 32, borderRadius: 10, background: uploading ? 'var(--muted)' : 'var(--accent)', border: '2px solid var(--bg)', display: 'grid', placeItems: 'center', cursor: uploading ? 'not-allowed' : 'pointer' }}
           >
-            <Camera size={15} color="#0d0f14" />
+            {uploading
+              ? <Loader size={14} color="#0d0f14" style={{ animation: 'spin 1s linear infinite' }} />
+              : <Camera size={15} color="#0d0f14" />
+            }
           </button>
           <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAvatarFile} />
         </div>
+        {uploadError && <div style={{ fontSize: 11, color: '#ef4444', fontWeight: 600, textAlign: 'center' }}>{uploadError}</div>}
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--text)' }}>{displayName || 'Admin'}</div>
           <div style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600, marginTop: 2 }}>School Admin</div>

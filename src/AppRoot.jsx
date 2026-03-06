@@ -33,7 +33,9 @@ export default function AppRoot() {
             let role = await detectRole(parsed.npub)
             if (!role && parsed.role === 'admin') role = 'admin'
             if (role) {
-              setUser({ ...parsed, role })
+              // Load avatar from school DB — not stored in localStorage
+              const school = await getSchool()
+              setUser({ ...parsed, role, avatar: school?.avatar || '' })
               target = 'app'
             }
           }
@@ -84,6 +86,18 @@ export default function AppRoot() {
           console.log('[AppRoot] onUpdate:', type)
           setDataVersion(v => v + 1)
           setSyncState('synced')
+          // If school data changed, refresh user name+avatar in state
+          if (type === 'school') {
+            const { getSchool } = await import('./db')
+            const school = await getSchool()
+            if (school) {
+              setUser(u => ({
+                ...u,
+                name:   u.role === 'admin' ? (school.adminName || u.name) : u.name,
+                avatar: school.avatar || u.avatar || '',
+              }))
+            }
+          }
         })
 
         setSyncState('synced')
@@ -107,6 +121,12 @@ export default function AppRoot() {
   }, [])
 
   // ── Logout: close socket, clear session ───────────────────────────
+  const handleUpdateUser = useCallback((updatedUser) => {
+    setUser(updatedUser)
+    // Persist updated user to localStorage
+    localStorage.setItem('gb_auth', JSON.stringify(updatedUser))
+  }, [])
+
   const handleLogout = useCallback(() => {
     stopSync()
     localStorage.removeItem('gb_auth')
@@ -126,6 +146,7 @@ export default function AppRoot() {
       syncState={syncState}
       dataVersion={dataVersion}
       onLogout={handleLogout}
+      onUpdateUser={handleUpdateUser}
     />
   )
 }
