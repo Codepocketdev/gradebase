@@ -19,7 +19,7 @@ import Classes        from './pages/Classes'
 import Reports        from './pages/Reports'
 import Budget         from './pages/Budget'
 import Settings       from './pages/Settings'
-import Profile        from './pages/Profile'
+import AdminProfile   from './pages/AdminProfile'
 import TeacherProfile from './pages/TeacherProfile'
 import Attendance     from './pages/Attendance'
 
@@ -68,7 +68,7 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
 
       case 'students':
         return userRole === 'student'
-          ? <StudentProfile user={user} />
+          ? <StudentProfile user={user} syncState={syncState} />
           : <Students user={user} userRole={userRole} dataVersion={dataVersion} />
 
       case 'payments':
@@ -98,7 +98,7 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
         return <Budget spentByCategory={spentByCategory} fmt={fmt} />
 
       case 'profile':
-        return <Profile user={user} syncState={syncState} onBack={() => setPage('settings')} />
+        return <AdminProfile user={user} syncState={syncState} onBack={() => setPage('settings')} onUpdateUser={onUpdateUser} />
 
       case 'teacher-profile':
         return <TeacherProfile user={user} syncState={syncState} onBack={() => setPage('settings')} onUpdateUser={onUpdateUser} />

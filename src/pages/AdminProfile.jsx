@@ -1,21 +1,22 @@
 import { useState, useEffect, useRef } from 'react'
 import { finalizeEvent } from 'nostr-tools'
 import { ArrowLeft, Camera, User, School, Zap, Shield, Eye, EyeOff, Copy, Check, Loader, Users } from 'lucide-react'
-import { getClasses, getSchool } from '../db'
+import { getSchool, getTeachers, getClasses } from '../db'
 import { uploadImage, skFromNsec } from '../nostrSync'
 import { useNostrProfile } from '../hooks/useNostrProfile'
 import { updateCachedProfile } from '../utils/profileCache'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
-export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }) {
+export default function AdminProfile({ user, syncState, onBack, onUpdateUser }) {
   const { profile, loading: profileLoading } = useNostrProfile(user?.pk)
 
-  const [displayName, setDisplayName]     = useState(user?.name   || '')
+  const [displayName, setDisplayName]     = useState(user?.name    || '')
   const [about, setAbout]                 = useState('')
-  const [previewAvatar, setPreviewAvatar] = useState(user?.avatar || '')
+  const [previewAvatar, setPreviewAvatar] = useState(user?.avatar  || '')
   const [schoolName, setSchoolName]       = useState('')
-  const [classes, setClasses]             = useState([])
+  const [teacherCount, setTeacherCount]   = useState(0)
+  const [studentCount, setStudentCount]   = useState(0)
   const [showNsec, setShowNsec]           = useState(false)
   const [copiedNpub, setCopiedNpub]       = useState(false)
   const [copiedNsec, setCopiedNsec]       = useState(false)
@@ -25,7 +26,7 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
   const [saved, setSaved]                 = useState(false)
   const fileRef = useRef(null)
 
-  // Hydrate edit fields from hook — only fills empty fields so user edits aren't clobbered
+  // Hydrate edit fields from hook — only if user hasn't started editing
   useEffect(() => {
     if (!profile) return
     setDisplayName(v => v || profile.name || profile.display_name || user?.name || '')
@@ -37,11 +38,12 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
     getSchool().then(s => {
       setSchoolName(s?.schoolName || '')
       if (!s?.schoolName) {
-        try { const c = localStorage.getItem('gb_school_cache'); if (c) setSchoolName(JSON.parse(c).schoolName||'') } catch {}
+        try { const c = localStorage.getItem('gb_school_cache'); if (c) setSchoolName(JSON.parse(c).schoolName || '') } catch {}
       }
     })
-    getClasses().then(all => setClasses((all||[]).filter(c => c.teacherNpub === user?.npub)))
-  }, [user?.npub])
+    getTeachers().then(t => setTeacherCount(t?.length || 0))
+    getClasses().then(cls => setStudentCount((cls||[]).reduce((s,c) => s+(c.students?.length||0), 0)))
+  }, [])
 
   const handleAvatarFile = async (e) => {
     const file = e.target.files?.[0]
@@ -49,7 +51,7 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
     if (file.size > 10*1024*1024) { setUploadError('Max 10MB'); return }
     setUploading(true); setUploadError('')
     try { setPreviewAvatar(await uploadImage(user.nsec, file)) }
-    catch { setUploadError('Upload failed — check connection') }
+    catch { setUploadError('Upload failed') }
     setUploading(false)
   }
 
@@ -58,7 +60,7 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
     setSaving(true)
     try {
       const sk = skFromNsec(user.nsec)
-      const content = { name: displayName.trim()||user.name||'Teacher', display_name: displayName.trim()||user.name||'Teacher', about: about.trim(), picture: previewAvatar||'' }
+      const content = { name: displayName.trim()||user.name||'Admin', display_name: displayName.trim()||user.name||'Admin', about: about.trim(), picture: previewAvatar||'' }
       const event = finalizeEvent({ kind:0, created_at: Math.floor(Date.now()/1000), tags:[], content: JSON.stringify(content) }, sk)
       await Promise.any(RELAYS.map(r => new Promise((res, rej) => {
         const ws = new WebSocket(r)
@@ -66,6 +68,7 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
         ws.onmessage = ({ data }) => { try { if (JSON.parse(data)[0]==='OK') { ws.close(); res() } } catch {} }
         ws.onerror = rej; setTimeout(rej, 8000)
       })))
+      // Update cache immediately — no stale flash next time
       updateCachedProfile(user.pk, content)
       if (onUpdateUser) onUpdateUser({ ...user, name: displayName.trim(), avatar: previewAvatar })
       setSaved(true); setTimeout(() => setSaved(false), 2500)
@@ -74,10 +77,9 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
   }
 
   const copy = async (text, w) => {
-    try { await navigator.clipboard.writeText(text); if(w==='npub'){setCopiedNpub(true);setTimeout(()=>setCopiedNpub(false),2000)}else{setCopiedNsec(true);setTimeout(()=>setCopiedNsec(false),2000)} } catch {}
+    try { await navigator.clipboard.writeText(text); if(w==='npub'){setCopiedNpub(true);setTimeout(()=>setCopiedNpub(false),2000)} else {setCopiedNsec(true);setTimeout(()=>setCopiedNsec(false),2000)} } catch {}
   }
 
-  const totalStudents = classes.reduce((s,c) => s+(c.students?.length||0), 0)
   const syncColor = s => s==='synced'?'#22c55e':s==='syncing'?'#fbbf24':'#ef4444'
   const syncLabel = s => s==='synced'?'● Live':s==='syncing'?'◌ Syncing…':'○ Offline'
 
@@ -89,11 +91,11 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
       <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:12, padding:'24px 0 8px' }}>
         <div style={{ position:'relative' }}>
           {previewAvatar
-            ? <img src={previewAvatar} alt="avatar" style={{ width:96,height:96,borderRadius:26,objectFit:'cover',border:'3px solid var(--accent)' }} onError={e=>e.target.style.display='none'}/>
-            : <div style={{ width:96,height:96,borderRadius:26,background:'rgba(79,255,176,0.1)',border:'2px solid rgba(79,255,176,0.3)',display:'grid',placeItems:'center' }}><User size={42} color="var(--accent)" strokeWidth={1.5}/></div>
+            ? <img src={previewAvatar} alt="avatar" style={{ width:96, height:96, borderRadius:26, objectFit:'cover', border:'3px solid var(--accent)' }} onError={e=>e.target.style.display='none'}/>
+            : <div style={{ width:96, height:96, borderRadius:26, background:'rgba(79,255,176,0.1)', border:'2px solid rgba(79,255,176,0.3)', display:'grid', placeItems:'center' }}><User size={42} color="var(--accent)" strokeWidth={1.5}/></div>
           }
-          <button onClick={() => !uploading && fileRef.current?.click()} style={{ position:'absolute',bottom:-4,right:-4,width:32,height:32,borderRadius:10,background:uploading?'var(--muted)':'var(--accent)',border:'2px solid var(--bg)',display:'grid',placeItems:'center',cursor:uploading?'not-allowed':'pointer' }}>
-            {uploading?<Loader size={14} color="#0d0f14" style={{animation:'spin 1s linear infinite'}}/>:<Camera size={15} color="#0d0f14"/>}
+          <button onClick={() => !uploading && fileRef.current?.click()} style={{ position:'absolute', bottom:-4, right:-4, width:32, height:32, borderRadius:10, background:uploading?'var(--muted)':'var(--accent)', border:'2px solid var(--bg)', display:'grid', placeItems:'center', cursor:uploading?'not-allowed':'pointer' }}>
+            {uploading ? <Loader size={14} color="#0d0f14" style={{animation:'spin 1s linear infinite'}}/> : <Camera size={15} color="#0d0f14"/>}
           </button>
           <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}} onChange={handleAvatarFile}/>
         </div>
@@ -101,37 +103,23 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
         {profileLoading
           ? <div style={{display:'flex',alignItems:'center',gap:6,color:'var(--muted)',fontSize:13}}><Loader size={14} style={{animation:'spin 1s linear infinite'}}/> Loading profile…</div>
           : <>
-              <div style={{fontSize:20,fontWeight:800,color:'var(--text)',textAlign:'center'}}>{displayName||user?.name||'Teacher'}</div>
-              <div style={{fontSize:12,color:'var(--accent)',fontWeight:600}}>Teacher · {schoolName||'—'}</div>
+              <div style={{fontSize:20,fontWeight:800,color:'var(--text)',textAlign:'center'}}>{displayName||user?.name||'Admin'}</div>
+              <div style={{fontSize:12,color:'var(--accent)',fontWeight:600}}>Admin · {schoolName||'—'}</div>
             </>
         }
       </div>
 
-      {/* School */}
       <div style={C.card}>
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}><School size={14} color="var(--accent)"/><span style={C.label}>School</span></div>
-        <div style={{fontSize:16,fontWeight:800,color:'var(--text)'}}>{schoolName||'—'}</div>
-      </div>
-
-      {/* Teacher's own classes */}
-      <div style={C.card}>
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
-          <Users size={14} color="var(--accent)"/>
-          <span style={C.label}>My Classes · {classes.length} · {totalStudents} students</span>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><School size={14} color="var(--accent)"/><span style={C.label}>School</span></div>
+        <div style={{fontSize:18,fontWeight:800,color:'var(--text)',marginBottom:10}}>{schoolName||'—'}</div>
+        <div style={{display:'flex',gap:24}}>
+          <div><div style={{fontSize:20,fontWeight:800,color:'var(--accent)'}}>{teacherCount}</div><div style={{fontSize:11,color:'var(--muted)',fontWeight:700}}>Teachers</div></div>
+          <div><div style={{fontSize:20,fontWeight:800,color:'var(--accent)'}}>{studentCount}</div><div style={{fontSize:11,color:'var(--muted)',fontWeight:700}}>Students</div></div>
         </div>
-        {classes.length === 0
-          ? <div style={{fontSize:13,color:'var(--muted)'}}>No classes yet</div>
-          : classes.map(cls => (
-            <div key={cls.id} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
-              <div style={{fontSize:14,fontWeight:700,color:'var(--text)'}}>{cls.name}</div>
-              <div style={{fontSize:12,color:'var(--muted)'}}>{cls.students?.length||0} students</div>
-            </div>
-          ))
-        }
       </div>
 
       <div style={{display:'flex',flexDirection:'column',gap:6}}><label style={C.label}>Display Name</label><input style={C.input} value={displayName} onChange={e=>setDisplayName(e.target.value)} placeholder="Your name"/></div>
-      <div style={{display:'flex',flexDirection:'column',gap:6}}><label style={C.label}>About</label><textarea style={{...C.input,resize:'none',height:90,lineHeight:1.6}} value={about} onChange={e=>setAbout(e.target.value)} placeholder="A short bio…"/></div>
+      <div style={{display:'flex',flexDirection:'column',gap:6}}><label style={C.label}>About</label><textarea style={{...C.input,resize:'none',height:90,lineHeight:1.6}} value={about} onChange={e=>setAbout(e.target.value)} placeholder="About your school…"/></div>
 
       <div style={{display:'flex',gap:8,padding:'10px 12px',background:'rgba(79,255,176,0.05)',border:'1px solid rgba(79,255,176,0.15)',borderRadius:10,fontSize:11,color:'var(--muted)',lineHeight:1.6}}>
         <Zap size={13} color="var(--accent)" style={{flexShrink:0,marginTop:1}}/> Saving publishes a Nostr <strong style={{color:'var(--accent)'}}>kind:0</strong> — visible on the Nostr network.

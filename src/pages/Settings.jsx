@@ -1,11 +1,16 @@
 import { Sun, Moon, ChevronRight, Zap, User } from 'lucide-react'
+import { useNostrProfile } from '../hooks/useNostrProfile'
 
 const syncColor = s => s === 'synced' ? 'var(--income)' : s === 'syncing' ? '#fbbf24' : '#ef4444'
 const syncLabel = s => s === 'synced' ? '● Live' : s === 'syncing' ? '◌ Syncing...' : '○ Offline'
-
 export default function Settings({ user, theme, toggleTheme, syncState, rate, rateLoading, onLogout, onNavigate }) {
   const isAdmin   = user?.role === 'admin'
   const isTeacher = user?.role === 'teacher'
+
+  // Live avatar + name — reads from cache instantly, no stale flash
+  const { profile: liveProfile } = useNostrProfile(user?.pk)
+  const liveAvatar = liveProfile?.picture || user?.avatar || ''
+  const liveName   = liveProfile?.name || liveProfile?.display_name || user?.name || ''
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -15,8 +20,8 @@ export default function Settings({ user, theme, toggleTheme, syncState, rate, ra
       {(isAdmin || isTeacher) && (
         <button style={S.profileBtn} onClick={() => onNavigate(isAdmin ? 'profile' : 'teacher-profile')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {user.avatar
-              ? <img src={user.avatar} alt="avatar" style={{ width: 48, height: 48, borderRadius: 14, objectFit: 'cover', border: '2px solid var(--accent)' }} />
+            {liveAvatar
+              ? <img src={liveAvatar} alt="avatar" style={{ width: 48, height: 48, borderRadius: 14, objectFit: 'cover', border: '2px solid var(--accent)' }} />
               : (
                 <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(79,255,176,0.12)', border: '1.5px solid rgba(79,255,176,0.3)', display: 'grid', placeItems: 'center' }}>
                   <User size={22} color="var(--accent)" />
@@ -24,7 +29,7 @@ export default function Settings({ user, theme, toggleTheme, syncState, rate, ra
               )
             }
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{user?.name || (isAdmin ? 'Admin' : 'Teacher')}</div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{liveName || (isAdmin ? 'Admin' : 'Teacher')}</div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>View & edit your profile</div>
             </div>
           </div>
