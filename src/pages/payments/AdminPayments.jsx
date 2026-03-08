@@ -21,22 +21,9 @@ const TERMS = [
   { id: 'term3', label: 'Term 3' },
 ]
 
-const fmt = (n) => `KSh ${Number(n || 0).toLocaleString()}`
+import { computeStudentBalance } from '../../computeBalance'
 
-function computeStudentBalance(studentNpub, payments, feeStructure, classId) {
-  if (!feeStructure) return { categories: [], total: 0, paid: 0, balance: 0, fullyPaid: false }
-  const tier = feeStructure.tiers?.find(t => t.classIds?.includes(classId))
-  if (!tier) return { categories: [], total: 0, paid: 0, balance: 0, fullyPaid: false }
-  const studentPayments = payments.filter(p => p.studentNpub === studentNpub)
-  let total = 0, paid = 0
-  const categories = tier.categories.map(cat => {
-    const catPaid = studentPayments.filter(p => p.categoryId === cat.id).reduce((s, p) => s + (Number(p.amount) || 0), 0)
-    total += Number(cat.amount) || 0
-    paid  += catPaid
-    return { ...cat, paid: catPaid, balance: Math.max(0, (Number(cat.amount) || 0) - catPaid), done: catPaid >= (Number(cat.amount) || 0) }
-  })
-  return { categories, total, paid, balance: Math.max(0, total - paid), fullyPaid: paid >= total && total > 0 }
-}
+const fmt = (n) => `KSh ${Number(n || 0).toLocaleString()}`
 
 export default function AdminPayments({ user, dataVersion }) {
   const [view, setView]         = useState('overview')
@@ -66,13 +53,23 @@ export default function AdminPayments({ user, dataVersion }) {
     load()
   }, [dataVersion])
 
-  const activeFees    = feeStructures.find(f => f.year === year && f.term === term) || null
-  const termPayments  = payments.filter(p => p.term === term && p.year === year)
+  const activeFees      = feeStructures.find(f => f.year === year && f.term === term) || null
+  const termPayments    = payments.filter(p => p.term === term && p.year === year)
   const schoolCollected = termPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
-  const schoolTotal   = feeStructures.reduce((s, f) => {
-    if (f.year !== year || f.term !== term) return s
-    return s + (f.tiers?.reduce((ts, t) => ts + t.categories.reduce((cs, c) => cs + (Number(c.amount) || 0), 0), 0) || 0)
-  }, 0)
+
+  // schoolTotal = sum of every student's individual expected total
+  // Lunch is variable (home/daily/weekly/monthly) so we compute per student
+  const schoolTotal = (() => {
+    if (!activeFees) return 0
+    let total = 0
+    for (const cls of classes) {
+      for (const stu of (cls.students || [])) {
+        const bal = computeStudentBalance(stu.npub, stu.lunchType, termPayments, activeFees, cls.id)
+        total += bal.total
+      }
+    }
+    return total
+  })()
 
   const reloadPayments = async () => { const pmts = await getPayments(); setPayments(pmts || []) }
 
@@ -162,7 +159,7 @@ export default function AdminPayments({ user, dataVersion }) {
               const students    = cls.students || []
               const clsPayments = termPayments.filter(p => p.classId === cls.id)
               const clsCollected = clsPayments.reduce((s,p) => s+(Number(p.amount)||0), 0)
-              const fullyPaid   = students.filter(s => computeStudentBalance(s.npub, termPayments, activeFees, cls.id).fullyPaid).length
+              const fullyPaid   = students.filter(s => computeStudentBalance(s.npub, s.lunchType, termPayments, activeFees, cls.id).fullyPaid).length
               return (
                 <button key={cls.id} style={S.card} onClick={() => { setSelectedClass(cls); setView('class') }}>
                   <div style={{ ...S.badge, background: cls.color?.bg||'#f0fdf4', color: cls.color?.color||'#00c97a', border: `1px solid ${cls.color?.border||'#bbf7d0'}` }}>
@@ -204,7 +201,7 @@ export default function AdminPayments({ user, dataVersion }) {
         </div>
         <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 8, paddingBottom: 100 }}>
           {students.map(stu => {
-            const bal = computeStudentBalance(stu.npub, termPayments, activeFees, selectedClass.id)
+            const bal = computeStudentBalance(stu.npub, stu.lunchType, termPayments, activeFees, selectedClass.id)
             return (
               <button key={stu.npub} style={S.card} onClick={() => { setSelectedStudent(stu); setView('student') }}>
                 <div style={{ width: 42, height: 42, borderRadius: '50%', background: stu.grad||'linear-gradient(135deg,#00c97a,#00a862)', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800, color: '#fff', flexShrink: 0 }}>
@@ -235,7 +232,7 @@ export default function AdminPayments({ user, dataVersion }) {
 
   // ── STUDENT VIEW ──────────────────────────────────────────────────────
   if (view === 'student' && selectedStudent && selectedClass) {
-    const bal = computeStudentBalance(selectedStudent.npub, termPayments, activeFees, selectedClass.id)
+    const bal = computeStudentBalance(selectedStudent.npub, selectedStudent.lunchType, termPayments, activeFees, selectedClass.id)
     const studentPayments = termPayments.filter(p => p.studentNpub === selectedStudent.npub).sort((a,b) => b.createdAt-a.createdAt)
     return (
       <div style={S.page}>
@@ -326,9 +323,8 @@ export default function AdminPayments({ user, dataVersion }) {
   // ── RECORD PAYMENT ────────────────────────────────────────────────────
   if (view === 'record' && selectedStudent && selectedClass) {
     const tier = activeFees?.tiers?.find(t => t.classIds?.includes(selectedClass.id))
-    // Fallback: class not in a tier → show all categories across all tiers
     const categories = tier?.categories || activeFees?.tiers?.flatMap(t => t.categories) || []
-    const bal = computeStudentBalance(selectedStudent.npub, termPayments, activeFees, selectedClass.id)
+    const bal = computeStudentBalance(selectedStudent.npub, selectedStudent.lunchType, termPayments, activeFees, selectedClass.id)
     const selectedCat  = categories.find(c => c.id === form.categoryId)
     const catPaidSoFar = selectedCat ? (bal.categories.find(c => c.id === selectedCat.id)?.paid || 0) : 0
     const catBalance   = selectedCat ? Math.max(0, (Number(selectedCat.amount)||0) - catPaidSoFar) : 0
@@ -346,8 +342,6 @@ export default function AdminPayments({ user, dataVersion }) {
         </div>
 
         <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14, paddingBottom: 120 }}>
-
-          {/* Student chip */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14 }}>
             <div style={{ width: 44, height: 44, borderRadius: '50%', background: selectedStudent.grad||'linear-gradient(135deg,#00c97a,#00a862)', display: 'grid', placeItems: 'center', fontSize: 14, fontWeight: 800, color: '#fff' }}>
               {selectedStudent.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase()}
@@ -370,7 +364,6 @@ export default function AdminPayments({ user, dataVersion }) {
             </div>
           )}
 
-          {/* Category grid */}
           <div>
             <div style={S.label}>Select Category</div>
             {categories.length === 0 ? (
@@ -415,7 +408,6 @@ export default function AdminPayments({ user, dataVersion }) {
             )}
           </div>
 
-          {/* Balance preview */}
           {selectedCat && (
             <div style={{ padding: '10px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, fontSize: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -433,7 +425,6 @@ export default function AdminPayments({ user, dataVersion }) {
             </div>
           )}
 
-          {/* Amount */}
           <div>
             <div style={S.label}>Amount (KSh)</div>
             <input type="number" min="0" value={form.amount}
@@ -442,7 +433,6 @@ export default function AdminPayments({ user, dataVersion }) {
               style={{ ...S.input, fontSize: 20, fontWeight: 800, color: 'var(--accent)', textAlign: 'center' }} />
           </div>
 
-          {/* Note */}
           <div>
             <div style={S.label}>Note (optional)</div>
             <input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
@@ -451,7 +441,6 @@ export default function AdminPayments({ user, dataVersion }) {
           </div>
         </div>
 
-        {/* Footer buttons */}
         <div style={{ position: 'fixed', bottom: 72, left: 0, right: 0, padding: '12px 20px', background: 'var(--bg)', borderTop: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', gap: 10, maxWidth: 480, margin: '0 auto' }}>
             <button onClick={goBack}

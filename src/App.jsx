@@ -99,7 +99,7 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
         return <Classes user={user} userRole={userRole} dataVersion={dataVersion} />
 
       case 'fee-structure':
-        return isAdmin ? <FeeStructure user={user} onBack={() => setPage('settings')} /> : null
+        return isAdmin ? <FeeStructure user={user} onBack={() => setMoreOpen(true)} /> : null
 
       case 'reports':
         return <Reports transactions={transactions} stats={stats} spentByCategory={spentByCategory} schoolName={schoolName} fmt={fmt} />

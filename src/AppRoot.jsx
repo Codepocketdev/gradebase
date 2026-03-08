@@ -7,7 +7,7 @@ import {
   getTeachers, getClasses,
   replaceAllTeachers, replaceAllClasses, replaceAllPayments,
 } from './db'
-import { startSync, stopSync, fetchAndSeed, fetchAndSeedAttendance } from './nostrSync'
+import { startSync, stopSync, fetchAndSeed, fetchAndSeedAttendance, fetchAndSeedPayments } from './nostrSync'
 import { useTheme } from './hooks/useTheme'
 
 // ── Restoring screen shown while we re-seed from Nostr ────────────────
@@ -74,6 +74,16 @@ export default function AppRoot() {
                 console.log('[AppRoot] cold reseed result:', result)
               } catch (e) {
                 console.warn('[AppRoot] cold reseed failed:', e)
+              }
+              // Seed fee structures + payment entries for all roles
+              // adminNpub may be the user's own pk (admin) or from meta (teacher/student)
+              try {
+                const adminNpubForPayments = parsed.role === 'admin'
+                  ? (await import('nostr-tools')).nip19.npubEncode(parsed.pk)
+                  : meta.adminNpub || undefined
+                if (adminNpubForPayments) await fetchAndSeedPayments(adminNpubForPayments)
+              } catch (e) {
+                console.warn('[AppRoot] cold payment seed failed:', e)
               }
               setRestoring(false)
             }
@@ -153,6 +163,13 @@ export default function AppRoot() {
                 setDataVersion(v => v + 1)
               }
             } catch {}
+            // Fee structures + payment entries (admin is the publisher)
+            try {
+              const { nip19 } = await import('nostr-tools')
+              const adminNpub = nip19.npubEncode(user.pk)
+              await fetchAndSeedPayments(adminNpub)
+              setDataVersion(v => v + 1)
+            } catch {}
           }
 
           if (user.role === 'teacher') {
@@ -169,6 +186,11 @@ export default function AppRoot() {
             // Attendance for own classes
             await fetchAndSeedAttendance([user.pk])
             setDataVersion(v => v + 1)
+            // Fee structures + payment entries (admin publishes these)
+            if (meta.adminNpub) {
+              await fetchAndSeedPayments(meta.adminNpub)
+              setDataVersion(v => v + 1)
+            }
           }
 
           if (user.role === 'student') {
@@ -193,6 +215,17 @@ export default function AppRoot() {
               if (tNpub) {
                 const teacherPk = nip19.decode(tNpub).data
                 await fetchAndSeedAttendance([teacherPk])
+                setDataVersion(v => v + 1)
+              }
+            } catch {}
+            // Fee structures + payment entries (admin publishes these)
+            try {
+              const school = await getSchool()
+              if (school?.adminNpub) {
+                await fetchAndSeedPayments(school.adminNpub)
+                setDataVersion(v => v + 1)
+              } else if (meta.adminNpub) {
+                await fetchAndSeedPayments(meta.adminNpub)
                 setDataVersion(v => v + 1)
               }
             } catch {}

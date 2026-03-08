@@ -1,10 +1,14 @@
 /**
  * GradeBase — Student Payments (View Only)
- * Student sees their own payment breakdown per category + balance.
+ * Step 1: render instantly from IndexedDB
+ * Step 2: fetch fresh fee structures + payments from Nostr in BG
+ * Step 3: update UI + save to DB when Nostr data arrives
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Loader, Award, Check, AlertCircle } from 'lucide-react'
-import { getClasses, getPayments, getAllFeeStructures } from '../../db'
+import { getClasses, getPayments, getAllFeeStructures, getSchool, savePayment, saveFeeStructure } from '../../db'
+import { computeStudentBalance } from '../../computeBalance'
+import { fetchAllFeeStructures, fetchPaymentEntries } from '../../nostrSync'
 
 const CURRENT_YEAR = new Date().getFullYear()
 const TERMS = [
@@ -15,24 +19,60 @@ const TERMS = [
 const fmt = (n) => `KSh ${Number(n||0).toLocaleString()}`
 
 export default function StudentPayments({ user, dataVersion }) {
-  const [loading, setLoading]       = useState(true)
-  const [myClass, setMyClass]       = useState(null)
-  const [payments, setPayments]     = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [syncing, setSyncing]         = useState(false)
+  const [myClass, setMyClass]         = useState(null)
+  const [payments, setPayments]       = useState([])
   const [feeStructures, setFeeStructures] = useState([])
-  const [term, setTerm]             = useState('term1')
-  const [year, setYear]             = useState(CURRENT_YEAR)
+  const [term, setTerm]               = useState('term1')
+  const [year, setYear]               = useState(CURRENT_YEAR)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     const load = async () => {
+      // ── Step 1: render from IndexedDB immediately ─────────────────
       setLoading(true)
-      const [classes, pmts, fees] = await Promise.all([
+      const [classes, localPmts, localFees] = await Promise.all([
         getClasses(), getPayments(), getAllFeeStructures()
       ])
       const cls = (classes||[]).find(c => c.students?.some(s => s.npub === user.npub))
-      setMyClass(cls || null)
-      setPayments(pmts||[])
-      setFeeStructures(fees||[])
-      setLoading(false)
+      if (mountedRef.current) {
+        setMyClass(cls || null)
+        setPayments(localPmts||[])
+        setFeeStructures(localFees||[])
+        setLoading(false)
+      }
+
+      // ── Step 2: fetch fresh from Nostr in background ──────────────
+      const school = await getSchool()
+      if (!school?.adminNpub || !mountedRef.current) return
+
+      setSyncing(true)
+      try {
+        const [nostrFees, nostrPmts] = await Promise.all([
+          fetchAllFeeStructures(school.adminNpub),
+          fetchPaymentEntries(school.adminNpub),
+        ])
+
+        if (!mountedRef.current) return
+
+        if (nostrFees?.length) {
+          for (const f of nostrFees) await saveFeeStructure(f).catch(() => {})
+          setFeeStructures(nostrFees)
+        }
+        if (nostrPmts?.length) {
+          for (const p of nostrPmts) await savePayment(p).catch(() => {})
+          setPayments(nostrPmts)
+        }
+      } catch (e) {
+        console.warn('[StudentPayments] BG sync error:', e)
+      }
+      if (mountedRef.current) setSyncing(false)
     }
     load()
   }, [dataVersion, user.npub])
@@ -41,15 +81,12 @@ export default function StudentPayments({ user, dataVersion }) {
   const termPayments = payments.filter(p => p.studentNpub === user.npub && p.term === term && p.year === year)
   const tier         = activeFees?.tiers?.find(t => t.classIds?.includes(myClass?.id))
 
-  // Compute per category
-  let total = 0, paid = 0
-  const categories = (tier?.categories || []).map(cat => {
-    const catPaid = termPayments.filter(p => p.categoryId === cat.id).reduce((s,p) => s+(Number(p.amount)||0), 0)
-    total += Number(cat.amount)||0; paid += catPaid
-    return { ...cat, paid: catPaid, balance: Math.max(0,(Number(cat.amount)||0)-catPaid), done: catPaid >= (Number(cat.amount)||0) }
-  })
-  const balance   = Math.max(0, total - paid)
-  const fullyPaid = paid >= total && total > 0
+  // Use shared lunch-aware balance calculator
+  // myClass.students contains student lunchType set from the Classes page
+  const myStudentData = myClass?.students?.find(s => s.npub === user.npub)
+  const bal       = computeStudentBalance(user.npub, myStudentData?.lunchType, termPayments, activeFees, myClass?.id)
+  const { categories, total, paid, fullyPaid } = bal
+  const balance   = bal.balance
   const pct       = total > 0 ? Math.min(100, Math.round((paid/total)*100)) : 0
 
   if (loading) return (
@@ -67,21 +104,34 @@ export default function StudentPayments({ user, dataVersion }) {
           <div style={S.title}>My Fees</div>
           <div style={S.sub}>{myClass?.name || 'No class assigned'}</div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <select value={term} onChange={e => setTerm(e.target.value)} style={S.miniSelect}>
-            {TERMS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-          </select>
-          <select value={year} onChange={e => setYear(Number(e.target.value))} style={S.miniSelect}>
-            {[CURRENT_YEAR-1,CURRENT_YEAR,CURRENT_YEAR+1].map(y=><option key={y} value={y}>{y}</option>)}
-          </select>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {syncing && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--accent)', fontWeight: 700 }}>
+              <Loader size={11} style={{ animation: 'spin 1s linear infinite' }} /> Syncing
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select value={term} onChange={e => setTerm(e.target.value)} style={S.miniSelect}>
+              {TERMS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+            <select value={year} onChange={e => setYear(Number(e.target.value))} style={S.miniSelect}>
+              {[CURRENT_YEAR-1,CURRENT_YEAR,CURRENT_YEAR+1].map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
         </div>
       </div>
 
       <div style={{ padding: '14px 20px', display: 'flex', flexDirection: 'column', gap: 14, paddingBottom: 100 }}>
 
-        {!activeFees && (
+        {!activeFees && !syncing && (
           <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#fbbf24', fontWeight: 600 }}>
             <AlertCircle size={14} /> Fee structure not yet set for this term.
+          </div>
+        )}
+
+        {activeFees && !tier && (
+          <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#fbbf24', fontWeight: 600 }}>
+            <AlertCircle size={14} /> Your class hasn't been assigned to a fee tier yet.
           </div>
         )}
 
@@ -110,7 +160,6 @@ export default function StudentPayments({ user, dataVersion }) {
           </div>
         </div>
 
-        {/* Fully paid badge */}
         {fullyPaid && (
           <div style={{ padding: '12px 16px', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 14, display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, fontWeight: 800, color: '#fbbf24' }}>
             <Award size={20} /> All fees cleared for {TERMS.find(t=>t.id===term)?.label} {year}!
@@ -146,7 +195,7 @@ export default function StudentPayments({ user, dataVersion }) {
           </div>
         )}
 
-        {/* Payment log */}
+        {/* Payment history */}
         {termPayments.length > 0 && (
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '14px 16px' }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 }}>Payment History</div>
@@ -165,7 +214,7 @@ export default function StudentPayments({ user, dataVersion }) {
           </div>
         )}
 
-        {termPayments.length === 0 && activeFees && (
+        {termPayments.length === 0 && activeFees && tier && !syncing && (
           <div style={{ textAlign: 'center', padding: '30px 0', fontSize: 13, color: 'var(--muted)' }}>
             No payments recorded yet for this term.
           </div>

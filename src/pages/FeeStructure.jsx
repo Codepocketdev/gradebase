@@ -3,12 +3,12 @@
  * Admin only. Sets fee categories + amounts per term per tier.
  * Two tiers: Pre-School and Upper Grades.
  * Admin assigns classes to tiers.
- * Lunch rates set globally.
+ * Lunch rates + term length set globally per term.
  */
 import { useState, useEffect } from 'react'
 import {
-  ArrowLeft, Plus, Trash2, Save, ChevronDown,
-  Loader, Check, School, Pencil, X
+  ArrowLeft, Plus, Trash2, Save, X,
+  Loader, Check, School, Utensils, Home
 } from 'lucide-react'
 import { getClasses, getFeeStructure, saveFeeStructure } from '../db'
 import { publishFeeStructure } from '../nostrSync'
@@ -31,48 +31,32 @@ const DEFAULT_CATEGORIES = [
   { id: 'exam',       name: 'Exam Fees',        amount: 0 },
 ]
 
-const LUNCH_RATES_DEFAULT = { monthly: 0, weekly: 0, daily: 0 }
-
 function newTier(id, name) {
-  return {
-    id,
-    name,
-    classIds: [],
-    categories: DEFAULT_CATEGORIES.map(c => ({ ...c, amount: 0 })),
-  }
+  return { id, name, classIds: [], categories: DEFAULT_CATEGORIES.map(c => ({ ...c })) }
 }
 
 export default function FeeStructure({ user, onBack }) {
-  const [term, setTerm]           = useState('term1')
-  const [year, setYear]           = useState(CURRENT_YEAR)
-  const [classes, setClasses]     = useState([])
-  const [tiers, setTiers]         = useState([
-    newTier('preschool', 'Pre-School'),
-    newTier('upper',     'Upper Grades'),
-  ])
-  const [lunchRates, setLunchRates] = useState(LUNCH_RATES_DEFAULT)
-  const [loading, setLoading]     = useState(true)
-  const [saving, setSaving]       = useState(false)
-  const [saved, setSaved]         = useState(false)
+  const [term, setTerm]             = useState('term1')
+  const [year, setYear]             = useState(CURRENT_YEAR)
+  const [classes, setClasses]       = useState([])
+  const [tiers, setTiers]           = useState([newTier('preschool','Pre-School'), newTier('upper','Upper Grades')])
+  const [loading, setLoading]       = useState(true)
+  const [saving, setSaving]         = useState(false)
+  const [saved, setSaved]           = useState(false)
   const [activeTier, setActiveTier] = useState('preschool')
   const [newCatName, setNewCatName] = useState('')
   const [showNewCat, setShowNewCat] = useState(false)
 
-  // Load classes + existing fee structure
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      const [cls, existing] = await Promise.all([
-        getClasses(),
-        getFeeStructure(year, term),
-      ])
+      const [cls, existing] = await Promise.all([getClasses(), getFeeStructure(year, term)])
       setClasses(cls || [])
       if (existing) {
         setTiers(existing.tiers || [newTier('preschool','Pre-School'), newTier('upper','Upper Grades')])
-        setLunchRates(existing.lunchRates || LUNCH_RATES_DEFAULT)
+
       } else {
         setTiers([newTier('preschool','Pre-School'), newTier('upper','Upper Grades')])
-        setLunchRates(LUNCH_RATES_DEFAULT)
       }
       setLoading(false)
     }
@@ -81,16 +65,9 @@ export default function FeeStructure({ user, onBack }) {
 
   const currentTier = tiers.find(t => t.id === activeTier)
 
-  const updateTierName = (tierId, name) => {
-    setTiers(prev => prev.map(t => t.id === tierId ? { ...t, name } : t))
-  }
-
   const toggleClassInTier = (tierId, classId) => {
     setTiers(prev => prev.map(t => {
-      if (t.id !== tierId) {
-        // Remove from other tiers
-        return { ...t, classIds: t.classIds.filter(id => id !== classId) }
-      }
+      if (t.id !== tierId) return { ...t, classIds: t.classIds.filter(id => id !== classId) }
       const has = t.classIds.includes(classId)
       return { ...t, classIds: has ? t.classIds.filter(id => id !== classId) : [...t.classIds, classId] }
     }))
@@ -124,17 +101,14 @@ export default function FeeStructure({ user, onBack }) {
       if (t.id !== activeTier) return t
       return { ...t, categories: [...t.categories, cat] }
     }))
-    setNewCatName('')
-    setShowNewCat(false)
+    setNewCatName(''); setShowNewCat(false)
   }
 
   const totalForTier = (tier) => tier.categories.reduce((s, c) => s + (Number(c.amount) || 0), 0)
 
   const handleSave = async () => {
     setSaving(true)
-    const structure = {
-      year, term, tiers, lunchRates, updatedAt: Date.now(),
-    }
+    const structure = { year, term, tiers, updatedAt: Date.now() }
     await saveFeeStructure(structure)
     publishFeeStructure(user.nsec, structure).catch(console.warn)
     setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500)
@@ -162,9 +136,7 @@ export default function FeeStructure({ user, onBack }) {
         <div style={{ flex: 1 }}>
           <div style={S.label}>Academic Year</div>
           <select value={year} onChange={e => setYear(Number(e.target.value))} style={S.select}>
-            {[CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(y => (
-              <option key={y} value={y}>{y}</option>
-            ))}
+            {[CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div style={{ flex: 1 }}>
@@ -232,10 +204,14 @@ export default function FeeStructure({ user, onBack }) {
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {currentTier.categories.map(cat => (
-                      <div key={cat.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12 }}>
+                      <div key={cat.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--bg)', border: 'var(--border)', borderRadius: 12, border: '1px solid var(--border)' }}>
                         <div style={{ flex: 1 }}>
-                          <input value={cat.name} onChange={e => updateCategoryName(currentTier.id, cat.id, e.target.value)}
-                            style={{ background: 'transparent', border: 'none', outline: 'none', fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--font-display)', width: '100%' }} />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input value={cat.name} onChange={e => updateCategoryName(currentTier.id, cat.id, e.target.value)}
+                              style={{ background: 'transparent', border: 'none', outline: 'none', fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--font-display)', width: '100%' }} />
+
+                          </div>
+
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>KSh</span>
@@ -252,38 +228,38 @@ export default function FeeStructure({ user, onBack }) {
                     ))}
                   </div>
 
-                  {/* Tier total */}
+                  {/* Tier total — excludes lunch (it's per-student variable) */}
                   <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(79,255,176,0.06)', border: '1px solid rgba(79,255,176,0.15)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Total — {currentTier.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>Fixed Fees Total</div>
                     <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--accent)' }}>{fmt(totalForTier(currentTier))}</div>
                   </div>
                 </div>
 
-                {/* Lunch rates (global) */}
+                {/* Lunch info */}
                 <div style={{ ...S.card, marginTop: 12 }}>
-                  <div style={S.cardTitle}>Lunch Rates (per student)</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 10 }}>
+                  <div style={S.cardTitle}><Utensils size={14} /> Lunch</div>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6, lineHeight: 1.6 }}>
+                    Set the lunch fee amount in the <strong style={{ color: 'var(--text)' }}>Lunch</strong> category above — this is the flat term total every non-home student owes.
+                  </div>
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {[
-                      { key: 'monthly', label: 'Monthly' },
-                      { key: 'weekly',  label: 'Weekly'  },
-                      { key: 'daily',   label: 'Daily'   },
-                    ].map(({ key, label }) => (
-                      <div key={key} style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5 }}>{label}</div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'var(--bg)', border: '1.5px solid var(--border)', borderRadius: 10, padding: '6px 8px', minWidth: 0 }}>
-                          <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>KSh</span>
-                          <input type="number" min="0" value={lunchRates[key] || ''}
-                            onChange={e => setLunchRates(prev => ({ ...prev, [key]: Number(e.target.value) || 0 }))}
-                            placeholder="0"
-                            style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 13, fontWeight: 700, color: 'var(--accent)', fontFamily: 'var(--font-display)', textAlign: 'right', minWidth: 0, width: '100%' }} />
+                      { Icon: Home,   label: 'Home Lunch',           note: 'Excluded — owes KSh 0' },
+                      { Icon: Utensils, label: 'Monthly / Weekly / Daily', note: 'Owes the full lunch amount — pays in installments' },
+                    ].map(({ Icon, label, note }) => (
+                      <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                        <Icon size={14} color="var(--muted)" />
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{label}</div>
+                          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{note}</div>
                         </div>
                       </div>
                     ))}
                   </div>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, lineHeight: 1.5 }}>
-                    Students tagged "Home Lunch" are excluded from lunch billing.
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10, lineHeight: 1.5 }}>
+                    Set each student's lunch type in the <strong style={{ color: 'var(--text)' }}>Classes</strong> page.
                   </div>
                 </div>
+
               </div>
             )}
           </div>

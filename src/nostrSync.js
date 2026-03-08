@@ -249,6 +249,73 @@ export async function fetchAndSeedAttendance(teacherPks) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// PAYMENTS + FEES SEED — fetch all fee structures + payment entries
+// Called on boot/cache-clear for all roles so payments survive cache clears
+// adminNpub is the school admin who publishes all fee/payment events
+// ═══════════════════════════════════════════════════════════════════════
+export async function fetchAndSeedPayments(adminNpub) {
+  if (!adminNpub) return
+  try {
+    const { saveFeeStructure, savePayment } = await import('./db')
+    const adminPk = nip19.decode(adminNpub).data
+
+    const evs = await fetchEvents([
+      { kinds: [1], authors: [adminPk], '#t': [TAG_FEES, TAG_PAYMENT_ENTRY], limit: 2000 }
+    ], 15000)
+
+    console.log('[nostrSync] fetchAndSeedPayments got', evs.length, 'events')
+
+    // Dedupe fee structures by year+term — keep newest
+    const latestFees = {}
+    // Dedupe payment entries by id — keep newest
+    const latestPmts = {}
+
+    for (const ev of evs) {
+      const tag = ev.tags.find(t => t[0]==='t' && (t[1]===TAG_FEES || t[1]===TAG_PAYMENT_ENTRY))?.[1]
+      if (!tag) continue
+
+      if (tag === TAG_FEES) {
+        try {
+          const raw  = ev.content.startsWith(P_FEES) ? ev.content.slice(P_FEES.length) : null
+          if (!raw) continue
+          const data = JSON.parse(raw)
+          const key  = `${data.year}-${data.term}`
+          if (!latestFees[key] || ev.created_at > latestFees[key].at) {
+            latestFees[key] = { data: { ...data, key }, at: ev.created_at }
+          }
+        } catch {}
+      }
+
+      if (tag === TAG_PAYMENT_ENTRY) {
+        try {
+          const raw  = ev.content.startsWith(P_PAYMENT_ENTRY) ? ev.content.slice(P_PAYMENT_ENTRY.length) : null
+          if (!raw) continue
+          const data = JSON.parse(raw)
+          if (data.deleted) continue
+          if (!latestPmts[data.id] || ev.created_at > latestPmts[data.id].at) {
+            latestPmts[data.id] = { data, at: ev.created_at }
+          }
+        } catch {}
+      }
+    }
+
+    for (const { data } of Object.values(latestFees)) {
+      try { await saveFeeStructure(data) } catch {}
+    }
+    for (const { data } of Object.values(latestPmts)) {
+      try { await savePayment(data) } catch {}
+    }
+
+    console.log('[nostrSync] fetchAndSeedPayments seeded',
+      Object.keys(latestFees).length, 'fee structures,',
+      Object.keys(latestPmts).length, 'payment entries'
+    )
+  } catch (e) {
+    console.warn('[nostrSync] fetchAndSeedPayments error:', e)
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // PUBLISH
 // ═══════════════════════════════════════════════════════════════════════
 export async function publishSchool(adminNsec, schoolData) {
