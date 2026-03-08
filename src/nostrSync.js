@@ -8,7 +8,6 @@ import { nip19, getPublicKey, finalizeEvent } from 'nostr-tools'
 import { saveSchool, getSchool, replaceAllTeachers, replaceAllClasses, replaceAllPayments, getTeachers, getClasses, getPayments } from './db'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
-
 const TAG = { SCHOOL: 'gradebase-school', TEACHERS: 'gradebase-teachers', CLASSES: 'gradebase-classes', PAYMENTS: 'gradebase-payments' }
 const P   = { SCHOOL: 'SCHOOL:', TEACHERS: 'TEACHERS:', CLASSES: 'CLASSES:', PAYMENTS: 'PAYMENTS:' }
 
@@ -78,7 +77,6 @@ async function handleEvent(ev, onUpdate) {
   if (!tag) return
   try {
     if (tag === TAG.SCHOOL) {
-      // Support both new format (SCHOOL:{...}) and old raw JSON format ({"name":...})
       const raw = ev.content.startsWith(P.SCHOOL) ? ev.content.slice(P.SCHOOL.length) : ev.content
       try {
         const d = JSON.parse(raw)
@@ -94,10 +92,20 @@ async function handleEvent(ev, onUpdate) {
       } catch (e) { console.warn('[nostrSync] teachers parse error:', e.message) }
     }
     else if (tag === TAG.CLASSES) {
+      // ── MERGE teacher classes instead of blindly replacing ────────
+      // Each teacher owns their own classes — merge by teacherNpub so
+      // one teacher's publish never wipes another teacher's classes.
       const raw = ev.content.startsWith(P.CLASSES) ? ev.content.slice(P.CLASSES.length) : ev.content
       try {
-        const classes = JSON.parse(raw)
-        await replaceAllClasses(classes); console.log('[nostrSync] classes saved:', classes.length); onUpdate('classes')
+        const incoming = JSON.parse(raw)
+        const teacherPk = nip19.npubEncode(ev.pubkey)
+        const existing  = await getClasses()
+        // Keep classes from OTHER teachers, replace only this teacher's
+        const others  = existing.filter(c => c.teacherNpub !== teacherPk)
+        const merged  = [...others, ...incoming]
+        await replaceAllClasses(merged)
+        console.log('[nostrSync] classes merged — teacher:', teacherPk.slice(0,16), 'count:', incoming.length)
+        onUpdate('classes')
       } catch (e) { console.warn('[nostrSync] classes parse error:', e.message) }
     }
     else if (tag === TAG.PAYMENTS) {
@@ -116,7 +124,6 @@ export async function detectRole(npub) {
   try {
     const pk = nip19.decode(npub).data
     const evs = await fetchEvents([{ kinds: [1], authors: [pk], '#t': [TAG.SCHOOL], limit: 1 }], 8000)
-    // Accept both new prefix format (SCHOOL:{...}) and old raw JSON format ({"name":...})
     if (evs.some(e => e.content.startsWith(P.SCHOOL) || e.content.startsWith('{'))) return 'admin'
     return null
   } catch { return null }
@@ -139,6 +146,7 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
     const filters = []
 
     if (role === 'admin') {
+      // Phase 1: fetch school + teachers + payments published by admin
       filters.push({ kinds: [1], authors: [userPk], '#t': [TAG.SCHOOL, TAG.TEACHERS, TAG.PAYMENTS] })
     }
 
@@ -177,9 +185,29 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
     }
 
     // School first
-    const evList   = Object.values(latest)
+    const evList      = Object.values(latest)
     const schoolFirst = [...evList.filter(e => e.tags.some(t => t[1]===TAG.SCHOOL)), ...evList.filter(e => !e.tags.some(t => t[1]===TAG.SCHOOL))]
     for (const ev of schoolFirst) await handleEvent(ev, () => {})
+
+    // ── Phase 2 for admin: fetch ALL teachers' classes ────────────────
+    if (role === 'admin') {
+      const teachers = await getTeachers()
+      if (teachers.length > 0) {
+        const teacherPks = teachers.map(t => { try { return nip19.decode(t.npub).data } catch { return null } }).filter(Boolean)
+        if (teacherPks.length > 0) {
+          console.log('[nostrSync] admin phase-2: fetching classes for', teacherPks.length, 'teachers')
+          const classEvents = await fetchEvents([{ kinds: [1], authors: teacherPks, '#t': [TAG.CLASSES] }], 12000)
+          console.log('[nostrSync] admin phase-2 got', classEvents.length, 'class events')
+          // Dedupe class events per teacher
+          const latestClass = {}
+          for (const ev of classEvents) {
+            const key = ev.pubkey
+            if (!latestClass[key] || ev.created_at > latestClass[key].created_at) latestClass[key] = ev
+          }
+          for (const ev of Object.values(latestClass)) await handleEvent(ev, () => {})
+        }
+      }
+    }
 
     // Verify
     if (role === 'teacher') {
@@ -207,7 +235,7 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
 // ═══════════════════════════════════════════════════════════════════════
 export async function publishSchool(adminNsec, schoolData) {
   const sk = skFromNsec(adminNsec)
-  const schoolEv = makeEvent(adminNsec, P.SCHOOL + JSON.stringify({ name: schoolData.schoolName, adminName: schoolData.adminName, about: schoolData.about||'', avatar: schoolData.avatar||'', app: 'gradebase', createdAt: schoolData.createdAt||Date.now() }), TAG.SCHOOL)
+  const schoolEv  = makeEvent(adminNsec, P.SCHOOL + JSON.stringify({ name: schoolData.schoolName, adminName: schoolData.adminName, about: schoolData.about||'', avatar: schoolData.avatar||'', app: 'gradebase', createdAt: schoolData.createdAt||Date.now() }), TAG.SCHOOL)
   const profileEv = finalizeEvent({ kind: 0, created_at: Math.floor(Date.now()/1000), tags: [], content: JSON.stringify({ name: schoolData.adminName, about: schoolData.about||`Admin of ${schoolData.schoolName} on GradeBase`, picture: schoolData.avatar||'', website: 'https://gradebase.app' }) }, sk)
   try { await Promise.any(pool().publish(RELAYS, schoolEv));  console.log('[nostrSync] school kind:1 OK') }  catch (e) { console.warn('[nostrSync] school kind:1 FAIL', e) }
   try { await Promise.any(pool().publish(RELAYS, profileEv)); console.log('[nostrSync] school kind:0 OK') }  catch (e) { console.warn('[nostrSync] school kind:0 FAIL', e) }
@@ -249,7 +277,7 @@ export async function syncDeletePayment(adminNsec, paymentId) {
 // ═══════════════════════════════════════════════════════════════════════
 // LIVE SYNC
 // ═══════════════════════════════════════════════════════════════════════
-export function startSync(userNsec, userPk, adminPk, role, onUpdate) {
+export async function startSync(userNsec, userPk, adminPk, role, onUpdate) {
   if (_sub) { try { _sub.close() } catch {} }
   _userNsec = userNsec; _userPk = userPk; _adminPk = adminPk
 
@@ -259,7 +287,20 @@ export function startSync(userNsec, userPk, adminPk, role, onUpdate) {
   ]
   if (role === 'admin')   filters.push({ kinds: [1], authors: [adminPk], '#t': [TAG.PAYMENTS] })
   if (role === 'teacher') filters.push({ kinds: [1], authors: [userPk],  '#t': [TAG.CLASSES]  })
-  if (role === 'admin')   filters.push({ kinds: [1], authors: [adminPk], '#t': [TAG.CLASSES]  })
+
+  // ── For admin: also subscribe to ALL teachers' class events ─────────
+  if (role === 'admin') {
+    try {
+      const teachers    = await getTeachers()
+      const teacherPks  = teachers.map(t => { try { return nip19.decode(t.npub).data } catch { return null } }).filter(Boolean)
+      if (teacherPks.length > 0) {
+        filters.push({ kinds: [1], authors: teacherPks, '#t': [TAG.CLASSES] })
+        console.log('[nostrSync] startSync admin: watching classes for', teacherPks.length, 'teachers')
+      }
+    } catch (e) {
+      console.warn('[nostrSync] startSync admin teacher-classes filter failed:', e)
+    }
+  }
 
   const latest = {}
   _sub = pool().subscribe(RELAYS, filters, {
@@ -291,5 +332,45 @@ export function stopSync() {
   if (_sub) { try { _sub.close() } catch {}; _sub = null }
   _userNsec = _userPk = _adminPk = null
   console.log('[nostrSync] stopped')
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// ATTENDANCE SYNC
+// ═══════════════════════════════════════════════════════════════════════
+const TAG_ATTENDANCE = 'gradebase-attendance'
+const P_ATTENDANCE   = 'ATTENDANCE:'
+
+export async function publishAttendance(teacherNsec, attendanceRecord) {
+  const content = P_ATTENDANCE + JSON.stringify(attendanceRecord)
+  const event   = makeEvent(teacherNsec, content, TAG_ATTENDANCE)
+  return publish(event)
+}
+
+export async function fetchAttendanceForClass(teacherNpub, classId) {
+  try {
+    const pk  = nip19.decode(teacherNpub).data
+    const evs = await fetchEvents([{
+      kinds: [1], authors: [pk], '#t': [TAG_ATTENDANCE], limit: 200
+    }], 15000)
+
+    const results = []
+    for (const ev of evs) {
+      try {
+        const raw    = ev.content.startsWith(P_ATTENDANCE) ? ev.content.slice(P_ATTENDANCE.length) : null
+        if (!raw) continue
+        const record = JSON.parse(raw)
+        if (record.classId === classId) results.push({ ...record, nostrId: ev.id, createdAt: ev.created_at })
+      } catch {}
+    }
+    const byDate = {}
+    for (const r of results) {
+      if (!byDate[r.date] || r.createdAt > byDate[r.date].createdAt) byDate[r.date] = r
+    }
+    return Object.values(byDate).sort((a, b) => b.date.localeCompare(a.date))
+  } catch (e) {
+    console.warn('[nostrSync] fetchAttendanceForClass error:', e)
+    return []
+  }
 }
 

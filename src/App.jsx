@@ -9,18 +9,19 @@ import { useTheme }        from './hooks/useTheme'
 import { useCurrency }     from './hooks/useCurrency'
 
 // Pages
-import HomePg        from './pages/Home'
-import Students      from './pages/Students'
+import HomePg         from './pages/Home'
+import Students       from './pages/Students'
 import StudentProfile from './pages/StudentProfile'
-import Transactions  from './pages/Transactions'
-import Dashboard     from './pages/Dashboard'
-import Teachers      from './pages/Teachers'
-import Classes       from './pages/Classes'
-import Reports       from './pages/Reports'
-import Budget        from './pages/Budget'
-import Settings      from './pages/Settings'
-import Profile       from './pages/Profile'
+import Transactions   from './pages/Transactions'
+import Dashboard      from './pages/Dashboard'
+import Teachers       from './pages/Teachers'
+import Classes        from './pages/Classes'
+import Reports        from './pages/Reports'
+import Budget         from './pages/Budget'
+import Settings       from './pages/Settings'
+import Profile        from './pages/Profile'
 import TeacherProfile from './pages/TeacherProfile'
+import Attendance     from './pages/Attendance'
 
 // Layout
 import MoreLayout, { MORE_ITEMS } from './layout/MoreLayout'
@@ -79,13 +80,7 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
         )
 
       case 'attendance':
-        return (
-          <div style={{ padding: 20, textAlign: 'center', color: 'var(--muted)', marginTop: 60 }}>
-            <ClipboardList size={48} strokeWidth={1} style={{ margin: '0 auto 16px' }} />
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Attendance</div>
-            <div style={{ fontSize: 13, marginTop: 8 }}>Coming soon — QR code scanning & attendance sheets</div>
-          </div>
-        )
+        return <Attendance user={user} userRole={userRole} dataVersion={dataVersion} />
 
       case 'dashboard':
         return <Dashboard stats={stats} chartData={chartData} transactions={transactions} fmt={fmt} />

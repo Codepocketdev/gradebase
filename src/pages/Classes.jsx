@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Plus, School, Trash2, X, Users, Pencil, Check, AlertTriangle, Loader } from 'lucide-react'
+import { Plus, School, Trash2, X, Users, Pencil, Check, AlertTriangle, Loader, Eye } from 'lucide-react'
 import { getClasses, replaceAllClasses } from '../db'
 import { syncSaveClass, syncDeleteClass } from '../nostrSync'
+
+const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
 const CLASS_COLORS = [
   { bg: '#f0fdf4', color: '#00c97a', border: '#bbf7d0' },
@@ -30,25 +32,141 @@ const colorFromHex = (hex) => {
 }
 
 export default function Classes({ user, userRole, dataVersion }) {
-  const [classes, setClasses]       = useState([])
-  const [loading, setLoading]       = useState(true)
-  const [saving, setSaving]         = useState(false)
-  const [showAdd, setShowAdd]       = useState(false)
+  const [classes, setClasses]           = useState([])
+  const [loading, setLoading]           = useState(true)
+  const [saving, setSaving]             = useState(false)
+  const [showAdd, setShowAdd]           = useState(false)
   const [editingClass, setEditingClass] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
-  const [newName, setNewName]       = useState('')
-  const [newColor, setNewColor]     = useState('#00c97a')
-  const [msg, setMsg]               = useState('')
+  const [expandedClass, setExpandedClass] = useState(null) // for admin student view
+  const [newName, setNewName]           = useState('')
+  const [newColor, setNewColor]         = useState('#00c97a')
+  const [msg, setMsg]                   = useState('')
 
-  const canManage = userRole === 'admin' || userRole === 'teacher'
+  // Only teacher can create/edit/delete — admin is view-only
+  const canManage = userRole === 'teacher'
+  const isAdmin   = userRole === 'admin'
 
-  // ── Load from IndexedDB on mount and when dataVersion changes ─────
+  // ── Load from IndexedDB ──────────────────────────────────────────
   useEffect(() => {
     getClasses().then(list => {
-      setClasses(list || [])
+      // For teacher: filter to own classes only in UI
+      const filtered = userRole === 'teacher'
+        ? (list || []).filter(c => c.teacherNpub === user?.npub)
+        : (list || [])
+      setClasses(filtered)
       setLoading(false)
     })
   }, [dataVersion])
+
+  // ── Live Nostr subscription — fetches & saves teacher's classes ───
+  // Runs on mount. Keeps a raw WebSocket open so classes are always
+  // restored even after cache clear, app delete, or new device login.
+  useEffect(() => {
+    if (userRole !== 'teacher' || !user?.npub) return
+
+    let closed = false
+    const sockets = []
+    // Track latest event timestamp — only apply newer events
+    // Each teacher publishes their FULL class array in one event,
+    // so the newest created_at is always the source of truth.
+    let latestCreatedAt = 0
+    const seen = new Set()
+
+    const subscribe = (relayUrl) => {
+      let ws
+      let reconnectTimer
+
+      const connect = () => {
+        if (closed) return
+        try {
+          ws = new WebSocket(relayUrl)
+          const subId = 'cls-' + Math.random().toString(36).slice(2, 8)
+
+          ws.onopen = () => {
+            if (closed) { ws.close(); return }
+            ws.send(JSON.stringify(['REQ', subId, {
+              kinds: [1],
+              authors: [user.pk],
+              '#t': ['gradebase-classes'],
+              limit: 20,
+            }]))
+          }
+
+          ws.onmessage = async ({ data }) => {
+            if (closed) return
+            let msg
+            try { msg = JSON.parse(data) } catch { return }
+            if (msg[0] !== 'EVENT') return
+            const ev = msg[2]
+            if (!ev || seen.has(ev.id)) return
+            seen.add(ev.id)
+
+            // IGNORE older events — only the latest publish counts
+            if (ev.created_at <= latestCreatedAt) {
+              console.log('[Classes] skipping older event', ev.created_at, '<=', latestCreatedAt)
+              return
+            }
+            latestCreatedAt = ev.created_at
+
+            const raw = ev.content.startsWith('CLASSES:') ? ev.content.slice('CLASSES:'.length) : null
+            if (!raw) return
+            try {
+              const incoming = JSON.parse(raw)
+              if (!Array.isArray(incoming)) return
+
+              // ev.pubkey is hex — encode to npub to match what's stored in class.teacherNpub
+              let teacherNpub = user.npub
+              try {
+                const { nip19 } = await import('nostr-tools')
+                teacherNpub = nip19.npubEncode(ev.pubkey)
+              } catch {}
+
+              // Log what we got so we can confirm students are included
+              const totalStudents = incoming.reduce((s, c) => s + (c.students?.length || 0), 0)
+              console.log('[Classes] restored', incoming.length, 'classes,', totalStudents, 'students from', relayUrl)
+              incoming.forEach(c => console.log('  -', c.name, '|', c.students?.length || 0, 'students'))
+
+              // Merge: keep other teachers' classes, replace this teacher's
+              const { getClasses, replaceAllClasses } = await import('../db')
+              const existing = await getClasses()
+              const others   = existing.filter(c => c.teacherNpub !== teacherNpub)
+              const merged   = [...others, ...incoming]
+              await replaceAllClasses(merged)
+
+              // Update UI — incoming has full class objects including students[]
+              if (!closed) setClasses(incoming)
+            } catch (e) {
+              console.warn('[Classes] parse error:', e)
+            }
+          }
+
+          ws.onerror = () => {}
+          ws.onclose = () => {
+            if (!closed) {
+              reconnectTimer = setTimeout(connect, 4000)
+            }
+          }
+        } catch {}
+      }
+
+      connect()
+      sockets.push({
+        close: () => {
+          closed = true
+          clearTimeout(reconnectTimer)
+          try { ws?.close() } catch {}
+        }
+      })
+    }
+
+    RELAYS.forEach(subscribe)
+
+    return () => {
+      closed = true
+      sockets.forEach(s => s.close())
+    }
+  }, [user?.npub, userRole])
 
   const resetForm = () => {
     setNewName(''); setNewColor('#00c97a')
@@ -61,19 +179,17 @@ export default function Classes({ user, userRole, dataVersion }) {
     if (!newName.trim()) return
     setSaving(true)
     const cls = {
-      id:        Date.now().toString(),
-      name:      newName.trim(),
-      color:     colorFromHex(newColor),
-      students:  [],
+      id:          Date.now().toString(),
+      name:        newName.trim(),
+      color:       colorFromHex(newColor),
+      students:    [],
       teacherNpub: user?.npub || '',
-      createdAt: Date.now(),
+      createdAt:   Date.now(),
     }
-    // Save to IndexedDB immediately
     const updated = [...classes, cls]
     await replaceAllClasses(updated)
     setClasses(updated)
     resetForm()
-    // Publish to Nostr in background
     syncSaveClass(user.nsec, cls)
       .then(() => showMsg('ok: Class published to Nostr'))
       .catch(() => showMsg('ok: Saved locally'))
@@ -104,8 +220,7 @@ export default function Classes({ user, userRole, dataVersion }) {
     await replaceAllClasses(updated)
     setClasses(updated)
     setDeleteTarget(null)
-    syncDeleteClass(user.nsec, id)
-      .catch(console.warn)
+    syncDeleteClass(user.nsec, id).catch(console.warn)
     setSaving(false)
   }
 
@@ -122,7 +237,7 @@ export default function Classes({ user, userRole, dataVersion }) {
 
   const totalStudents = classes.reduce((sum, c) => sum + (c.students?.length || 0), 0)
 
-  // ── Delete confirm ────────────────────────────────────────────────
+  // Delete confirm
   if (deleteTarget) return (
     <div style={S.page}>
       <div style={S.header}><div style={S.title}>Classes</div></div>
@@ -156,11 +271,18 @@ export default function Classes({ user, userRole, dataVersion }) {
           <div style={S.title}>Classes</div>
           <div style={S.subtitle}>{classes.length} class{classes.length !== 1 ? 'es' : ''} · {totalStudents} student{totalStudents !== 1 ? 's' : ''}</div>
         </div>
-        {canManage && (
-          <button style={S.addBtn} onClick={() => { resetForm(); setShowAdd(true) }}>
-            <Plus size={15} /> New Class
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {isAdmin && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: 'rgba(79,255,176,0.08)', border: '1px solid rgba(79,255,176,0.2)', borderRadius: 20, fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>
+              <Eye size={12} /> View Only
+            </div>
+          )}
+          {canManage && (
+            <button style={S.addBtn} onClick={() => { resetForm(); setShowAdd(true) }}>
+              <Plus size={15} /> New Class
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Status msg */}
@@ -170,8 +292,8 @@ export default function Classes({ user, userRole, dataVersion }) {
         </div>
       )}
 
-      {/* Add / Edit sheet */}
-      {showAdd && (
+      {/* Add / Edit sheet — teacher only */}
+      {showAdd && canManage && (
         <div style={S.overlay} onClick={e => e.target === e.currentTarget && resetForm()}>
           <div style={S.sheet}>
             <button style={S.closeBtn} onClick={resetForm}><X size={15} /></button>
@@ -251,24 +373,59 @@ export default function Classes({ user, userRole, dataVersion }) {
       {!loading && classes.length > 0 && (
         <div style={S.list}>
           {classes.map(cls => (
-            <div key={cls.id} style={S.classCard}>
-              <div style={{ width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, flexShrink: 0, background: cls.color?.bg || '#f0fdf4', color: cls.color?.color || '#00c97a', border: `1px solid ${cls.color?.border || '#bbf7d0'}` }}>
-                {cls.name.slice(0, 3).toUpperCase()}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{cls.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Users size={10} />{cls.students?.length || 0} student{(cls.students?.length || 0) !== 1 ? 's' : ''}
+            <div key={cls.id}>
+              <div style={S.classCard}>
+                {/* Color badge */}
+                <div style={{ width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, flexShrink: 0, background: cls.color?.bg || '#f0fdf4', color: cls.color?.color || '#00c97a', border: `1px solid ${cls.color?.border || '#bbf7d0'}` }}>
+                  {cls.name.slice(0, 3).toUpperCase()}
                 </div>
+
+                {/* Name + tap to expand for admin */}
+                <div
+                  style={{ flex: 1, cursor: isAdmin ? 'pointer' : 'default' }}
+                  onClick={() => isAdmin && setExpandedClass(expandedClass === cls.id ? null : cls.id)}
+                >
+                  <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{cls.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Users size={10} />{cls.students?.length || 0} student{(cls.students?.length || 0) !== 1 ? 's' : ''}
+                    {isAdmin && cls.teacherNpub && (
+                      <span style={{ marginLeft: 6, color: 'var(--accent)', fontSize: 10 }}>
+                        · {cls.teacherNpub.slice(0, 12)}…
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Teacher actions */}
+                {canManage && (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={() => openEdit(cls)} style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--surface2)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' }}>
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => setDeleteTarget(cls)} style={{ width: 34, height: 34, borderRadius: 10, background: '#fef2f2', border: '1px solid #fecaca', display: 'grid', placeItems: 'center', cursor: 'pointer', color: '#ef4444' }}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )}
               </div>
-              {canManage && (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button onClick={() => openEdit(cls)} style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--surface2)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' }}>
-                    <Pencil size={14} />
-                  </button>
-                  <button onClick={() => setDeleteTarget(cls)} style={{ width: 34, height: 34, borderRadius: 10, background: '#fef2f2', border: '1px solid #fecaca', display: 'grid', placeItems: 'center', cursor: 'pointer', color: '#ef4444' }}>
-                    <Trash2 size={14} />
-                  </button>
+
+              {/* Admin: expandable student list */}
+              {isAdmin && expandedClass === cls.id && (
+                <div style={{ margin: '0 0 4px', padding: '10px 14px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 14px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {!cls.students?.length
+                    ? <div style={{ fontSize: 12, color: 'var(--muted)', textAlign: 'center', padding: '8px 0' }}>No students enrolled</div>
+                    : cls.students.map((stu, i) => (
+                        <div key={stu.npub || i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ width: 32, height: 32, borderRadius: '50%', background: stu.grad || 'linear-gradient(135deg,#00c97a,#00a862)', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, color: '#fff', flexShrink: 0 }}>
+                            {stu.name?.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase()}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{stu.name}</div>
+                            <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>{stu.npub?.slice(0,20)}…</div>
+                          </div>
+                        </div>
+                      ))
+                  }
                 </div>
               )}
             </div>
@@ -281,23 +438,23 @@ export default function Classes({ user, userRole, dataVersion }) {
 }
 
 const S = {
-  page:       { minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-display)', paddingBottom: 100 },
-  header:     { background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  title:      { fontSize: 18, fontWeight: 800, color: 'var(--text)' },
-  subtitle:   { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
-  addBtn:     { display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', background: 'var(--accent)', border: 'none', borderRadius: 10, color: '#0d1117', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: 'var(--font-display)' },
-  list:       { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 },
-  classCard:  { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '14px 14px', display: 'flex', alignItems: 'center', gap: 12 },
-  empty:      { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '80px 32px', color: 'var(--muted)' },
-  emptyTitle: { fontSize: 17, fontWeight: 800, color: 'var(--text)' },
-  emptySub:   { fontSize: 13, textAlign: 'center', lineHeight: 1.7, maxWidth: 260 },
-  overlay:    { position: 'fixed', top: 0, left: 0, right: 0, bottom: 64, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' },
-  sheet:      { width: '100%', maxWidth: 480, background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px 44px', position: 'relative', boxShadow: '0 -8px 40px rgba(0,0,0,0.15)', maxHeight: '100%', overflowY: 'auto' },
-  closeBtn:   { position: 'absolute', top: 18, right: 18, background: 'var(--surface2)', border: 'none', width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' },
-  sheetTitle: { fontSize: 18, fontWeight: 800, color: 'var(--text)', marginBottom: 18 },
-  inputLabel: { fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, color: 'var(--muted)', marginBottom: 6 },
-  input:      { width: '100%', padding: '12px 14px', background: 'var(--bg)', border: '1.5px solid var(--border)', borderRadius: 11, fontSize: 13, color: 'var(--text)', fontFamily: 'var(--font-display)', outline: 'none', boxSizing: 'border-box' },
-  primaryBtn: { width: '100%', padding: 14, background: 'var(--accent)', border: 'none', borderRadius: 12, color: '#0d1117', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  page:        { minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-display)', paddingBottom: 100 },
+  header:      { background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  title:       { fontSize: 18, fontWeight: 800, color: 'var(--text)' },
+  subtitle:    { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
+  addBtn:      { display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', background: 'var(--accent)', border: 'none', borderRadius: 10, color: '#0d1117', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: 'var(--font-display)' },
+  list:        { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 },
+  classCard:   { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '14px 14px', display: 'flex', alignItems: 'center', gap: 12 },
+  empty:       { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '80px 32px', color: 'var(--muted)' },
+  emptyTitle:  { fontSize: 17, fontWeight: 800, color: 'var(--text)' },
+  emptySub:    { fontSize: 13, textAlign: 'center', lineHeight: 1.7, maxWidth: 260 },
+  overlay:     { position: 'fixed', top: 0, left: 0, right: 0, bottom: 64, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' },
+  sheet:       { width: '100%', maxWidth: 480, background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px 44px', position: 'relative', boxShadow: '0 -8px 40px rgba(0,0,0,0.15)', maxHeight: '100%', overflowY: 'auto' },
+  closeBtn:    { position: 'absolute', top: 18, right: 18, background: 'var(--surface2)', border: 'none', width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' },
+  sheetTitle:  { fontSize: 18, fontWeight: 800, color: 'var(--text)', marginBottom: 18 },
+  inputLabel:  { fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, color: 'var(--muted)', marginBottom: 6 },
+  input:       { width: '100%', padding: '12px 14px', background: 'var(--bg)', border: '1.5px solid var(--border)', borderRadius: 11, fontSize: 13, color: 'var(--text)', fontFamily: 'var(--font-display)', outline: 'none', boxSizing: 'border-box' },
+  primaryBtn:  { width: '100%', padding: 14, background: 'var(--accent)', border: 'none', borderRadius: 12, color: '#0d1117', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
   secondaryBtn:{ width: '100%', padding: 14, marginTop: 8, background: 'transparent', border: '1.5px solid var(--border)', borderRadius: 12, color: 'var(--text)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-display)' },
 }
 

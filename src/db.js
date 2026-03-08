@@ -1,32 +1,23 @@
 /**
  * GradeBase IndexedDB Cache
- * ─────────────────────────
- * Stores all school data locally so the app works instantly
- * even before Nostr relay responds.
- *
- * Stores:
- *   school    — { adminNpub, adminName, schoolName, createdAt }
- *   teachers  — [{ npub, name, classId?, createdAt }]
- *   classes   — [{ id, name, color, students: [...] }]
- *   payments  — [{ id, studentNpub, amount, note, createdAt }]
+ * Stores: school, teachers, classes, payments, attendance
  */
 
 const DB_NAME    = 'gradebase'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 const STORES = {
-  SCHOOL:   'school',
-  TEACHERS: 'teachers',
-  CLASSES:  'classes',
-  PAYMENTS: 'payments',
+  SCHOOL:     'school',
+  TEACHERS:   'teachers',
+  CLASSES:    'classes',
+  PAYMENTS:   'payments',
+  ATTENDANCE: 'attendance',
 }
 
-// ── Open / init DB ────────────────────────────────────────────────────
 let _db = null
 
 function openDB() {
   if (_db) return Promise.resolve(_db)
-
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
 
@@ -55,6 +46,15 @@ function openDB() {
         const p = db.createObjectStore(STORES.PAYMENTS, { keyPath: 'id' })
         p.createIndex('studentNpub', 'studentNpub', { unique: false })
       }
+      // ── v3: Attendance store ─────────────────────────────────────
+      // key: 'classId:YYYY-MM-DD'
+      // value: { classId, className, date, teacherNpub, records: [{ npub, name, status }] }
+      if (!db.objectStoreNames.contains(STORES.ATTENDANCE)) {
+        const at = db.createObjectStore(STORES.ATTENDANCE, { keyPath: 'key' })
+        at.createIndex('classId',     'classId',     { unique: false })
+        at.createIndex('date',        'date',        { unique: false })
+        at.createIndex('teacherNpub', 'teacherNpub', { unique: false })
+      }
     }
 
     req.onsuccess = (e) => { _db = e.target.result; resolve(_db) }
@@ -62,7 +62,6 @@ function openDB() {
   })
 }
 
-// ── Generic helpers ───────────────────────────────────────────────────
 function tx(storeName, mode = 'readonly') {
   return openDB().then(db => {
     const transaction = db.transaction(storeName, mode)
@@ -82,7 +81,6 @@ function promisify(req) {
 export async function getSchool() {
   const { store } = await tx(STORES.SCHOOL)
   const result = await promisify(store.get('main'))
-  // ── Fallback to localStorage if DB is cold (new port / fresh device) ──
   if (!result) {
     try {
       const cached = localStorage.getItem('gb_school_cache')
@@ -93,7 +91,6 @@ export async function getSchool() {
 }
 
 export async function saveSchool(data) {
-  // ── Also cache in localStorage so session restore works cross-origin ──
   try { localStorage.setItem('gb_school_cache', JSON.stringify(data)) } catch {}
   const { store } = await tx(STORES.SCHOOL, 'readwrite')
   return promisify(store.put(data, 'main'))
@@ -189,6 +186,39 @@ export async function replaceAllPayments(payments) {
   })
 }
 
+// ── ATTENDANCE ────────────────────────────────────────────────────────
+// key format: 'classId:YYYY-MM-DD'
+
+export async function getAttendance(classId, date) {
+  const { store } = await tx(STORES.ATTENDANCE)
+  return promisify(store.get(`${classId}:${date}`))
+}
+
+export async function saveAttendance(record) {
+  // record must have: { classId, className, date, teacherNpub, records: [...] }
+  const key = `${record.classId}:${record.date}`
+  const { store } = await tx(STORES.ATTENDANCE, 'readwrite')
+  return promisify(store.put({ ...record, key }))
+}
+
+export async function getAttendanceByClass(classId) {
+  const { store } = await tx(STORES.ATTENDANCE)
+  const index     = store.index('classId')
+  return promisify(index.getAll(classId))
+}
+
+export async function getAttendanceByDate(date) {
+  const { store } = await tx(STORES.ATTENDANCE)
+  const index     = store.index('date')
+  return promisify(index.getAll(date))
+}
+
+export async function getAttendanceByTeacher(teacherNpub) {
+  const { store } = await tx(STORES.ATTENDANCE)
+  const index     = store.index('teacherNpub')
+  return promisify(index.getAll(teacherNpub))
+}
+
 // ── ROLE DETECTION ────────────────────────────────────────────────────
 export async function detectRole(npub) {
   const [school, teachers, classes] = await Promise.all([
@@ -196,7 +226,6 @@ export async function detectRole(npub) {
     getTeachers(),
     getClasses(),
   ])
-
   if (school?.adminNpub === npub)                return 'admin'
   if (teachers.find(t => t.npub === npub))        return 'teacher'
   for (const cls of classes) {
@@ -224,12 +253,10 @@ export async function getNameForNpub(npub, role) {
   return ''
 }
 
-// ── CLEAR ALL (logout / factory reset) ───────────────────────────────
+// ── CLEAR ALL ─────────────────────────────────────────────────────────
 export async function clearAllData() {
-  // Clear localStorage caches too
   localStorage.removeItem('gb_school_cache')
   localStorage.removeItem('gb_sync_meta')
-
   const db     = await openDB()
   const stores = Object.values(STORES)
   return new Promise((resolve, reject) => {
