@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { finalizeEvent } from 'nostr-tools'
 import { ArrowLeft, Camera, User, School, Zap, Shield, Eye, EyeOff, Copy, Check, Loader, Users } from 'lucide-react'
-import { getClasses, getSchool } from '../db'
+import { getClasses, getSchool, saveSchool } from '../db'
 import { uploadImage, skFromNsec } from '../nostrSync'
 import { useNostrProfile } from '../hooks/useNostrProfile'
-import { updateCachedProfile } from '../utils/profileCache'
+import { saveProfile } from '../db'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
@@ -13,7 +13,7 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
 
   const [displayName, setDisplayName]     = useState(user?.name   || '')
   const [about, setAbout]                 = useState('')
-  const [previewAvatar, setPreviewAvatar] = useState(user?.avatar || '')
+  const [previewAvatar, setPreviewAvatar] = useState('')
   const [schoolName, setSchoolName]       = useState('')
   const [classes, setClasses]             = useState([])
   const [showNsec, setShowNsec]           = useState(false)
@@ -30,16 +30,54 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
     if (!profile) return
     setDisplayName(v => v || profile.name || profile.display_name || user?.name || '')
     setAbout(v       => v || profile.about || '')
-    setPreviewAvatar(v => v || profile.picture || '')
+    setPreviewAvatar(v => profile.picture || v || user?.avatar || '')
   }, [profile])
 
   useEffect(() => {
-    getSchool().then(s => {
-      setSchoolName(s?.schoolName || '')
-      if (!s?.schoolName) {
-        try { const c = localStorage.getItem('gb_school_cache'); if (c) setSchoolName(JSON.parse(c).schoolName||'') } catch {}
-      }
-    })
+    // 1. Sync read localStorage instantly — zero flash
+    try {
+      const c = localStorage.getItem('gb_school_cache')
+      const p = c && JSON.parse(c)
+      if (p?.schoolName) setSchoolName(p.schoolName)
+    } catch {}
+
+    // 2. Confirm from IndexedDB
+    getSchool().then(async s => {
+      if (s?.schoolName) { setSchoolName(s.schoolName); return }
+
+      // 3. Still empty — fetch school event live from Nostr using adminNpub
+      if (!s?.adminNpub) return
+      try {
+        const { nip19 } = await import('nostr-tools')
+        const adminPk = nip19.decode(s.adminNpub).data
+        const RELAYS  = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
+        const TAG     = 'gradebase-school'
+        const PREFIX  = 'SCHOOL:'
+
+        await Promise.any(RELAYS.map(relay => new Promise((res, rej) => {
+          const ws  = new WebSocket(relay)
+          const sub = 'sc-' + Math.random().toString(36).slice(2, 7)
+          ws.onopen = () => ws.send(JSON.stringify(['REQ', sub, { kinds:[1], authors:[adminPk], '#t':[TAG], limit:1 }]))
+          ws.onmessage = ({ data }) => {
+            try {
+              const msg = JSON.parse(data)
+              if (msg[0] !== 'EVENT') return
+              const ev  = msg[2]
+              const raw = ev.content.startsWith(PREFIX) ? ev.content.slice(PREFIX.length) : ev.content
+              const d   = JSON.parse(raw)
+              if (d.name) {
+                const schoolData = { ...s, schoolName: d.name, adminName: d.adminName || s.adminName }
+                saveSchool(schoolData).catch(() => {})
+                setSchoolName(d.name)
+                ws.close(); res()
+              }
+            } catch {}
+          }
+          ws.onerror = rej
+          setTimeout(rej, 8000)
+        })))
+      } catch {}
+    }).catch(() => {})
     getClasses().then(all => setClasses((all||[]).filter(c => c.teacherNpub === user?.npub)))
   }, [user?.npub])
 
@@ -66,7 +104,7 @@ export default function TeacherProfile({ user, syncState, onBack, onUpdateUser }
         ws.onmessage = ({ data }) => { try { if (JSON.parse(data)[0]==='OK') { ws.close(); res() } } catch {} }
         ws.onerror = rej; setTimeout(rej, 8000)
       })))
-      updateCachedProfile(user.pk, content)
+      saveProfile(user.pk, content, Math.floor(Date.now()/1000))
       if (onUpdateUser) onUpdateUser({ ...user, name: displayName.trim(), avatar: previewAvatar })
       setSaved(true); setTimeout(() => setSaved(false), 2500)
     } catch {}

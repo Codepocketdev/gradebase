@@ -1,19 +1,15 @@
-import { X, LayoutDashboard, UserCog, School, BarChart3, PieChart, Settings, ChevronRight, Users } from 'lucide-react'
+import { X, LayoutDashboard, UserCog, School, BarChart3, PieChart, Settings, ChevronRight, Users, BookOpen, Landmark } from 'lucide-react'
 
-/**
- * Role visibility:
- *   Admin   → Dashboard, Teachers, Reports, Budget, Settings
- *   Teacher → Classes, Students (their class), Settings
- *   Student → Settings only (home tab is their profile)
- */
 const MORE_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard',        icon: LayoutDashboard, desc: 'Charts & overview',       roles: ['admin']            },
-  { id: 'teachers',  label: 'Teachers',          icon: UserCog,         desc: 'Create & manage staff',   roles: ['admin']            },
-  { id: 'classes',   label: 'Classes',           icon: School,          desc: 'Manage your classes',     roles: ['teacher']          },
-  { id: 'students',  label: 'My Students',       icon: Users,           desc: 'Students in your class',  roles: ['teacher']          },
-  { id: 'reports',   label: 'Reports & Exports', icon: BarChart3,       desc: 'Download reports',        roles: ['admin']            },
-  { id: 'budget',    label: 'Budget',            icon: PieChart,        desc: 'Budget tracking',         roles: ['admin']            },
-  { id: 'settings',  label: 'Settings',          icon: Settings,        desc: 'App preferences',         roles: ['admin','teacher','student'] },
+  { id: 'dashboard',     label: 'Dashboard',        icon: LayoutDashboard, desc: 'Charts & overview',          roles: ['admin']                      },
+  { id: 'teachers',      label: 'Teachers',          icon: UserCog,         desc: 'Create & manage staff',      roles: ['admin']                      },
+  { id: 'fee-structure', label: 'Fee Structure',     icon: Landmark,        desc: 'Set fees per term & tier',   roles: ['admin']                      },
+  { id: 'school-ledger', label: 'School Ledger',     icon: BookOpen,        desc: 'Track school income & costs',roles: ['admin']                      },
+  { id: 'classes',       label: 'Classes',           icon: School,          desc: 'Manage your classes',        roles: ['teacher']                    },
+  { id: 'students',      label: 'My Students',       icon: Users,           desc: 'Students in your class',     roles: ['teacher']                    },
+  { id: 'reports',       label: 'Reports & Exports', icon: BarChart3,       desc: 'Download reports',           roles: ['admin']                      },
+  { id: 'budget',        label: 'Budget',            icon: PieChart,        desc: 'Budget tracking',            roles: ['admin']                      },
+  { id: 'settings',      label: 'Settings',          icon: Settings,        desc: 'App preferences',            roles: ['admin','teacher','student']   },
 ]
 
 export { MORE_ITEMS }
@@ -56,6 +52,7 @@ export default function MoreLayout({ userRole, onNavigate, onClose }) {
           </button>
         ))}
       </div>
+      <style>{`@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
     </div>
   )
 }

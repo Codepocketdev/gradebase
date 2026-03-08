@@ -1,10 +1,10 @@
 /**
  * GradeBase IndexedDB Cache
- * Stores: school, teachers, classes, payments, attendance
+ * v5: added PROFILES store (kind:0 cache per pubkey)
  */
 
 const DB_NAME    = 'gradebase'
-const DB_VERSION = 3
+const DB_VERSION = 5
 
 const STORES = {
   SCHOOL:     'school',
@@ -12,6 +12,8 @@ const STORES = {
   CLASSES:    'classes',
   PAYMENTS:   'payments',
   ATTENDANCE: 'attendance',
+  FEES:       'fees',
+  PROFILES:   'profiles',
 }
 
 let _db = null
@@ -36,24 +38,43 @@ function openDB() {
         const cl = db.createObjectStore(STORES.CLASSES, { keyPath: 'id' })
         cl.createIndex('teacherNpub', 'teacherNpub', { unique: false })
       } else if (oldVer < 2) {
-        const txn = e.target.transaction
-        const cl  = txn.objectStore(STORES.CLASSES)
+        const cl = e.target.transaction.objectStore(STORES.CLASSES)
         if (!cl.indexNames.contains('teacherNpub')) {
           cl.createIndex('teacherNpub', 'teacherNpub', { unique: false })
         }
       }
+
       if (!db.objectStoreNames.contains(STORES.PAYMENTS)) {
         const p = db.createObjectStore(STORES.PAYMENTS, { keyPath: 'id' })
         p.createIndex('studentNpub', 'studentNpub', { unique: false })
+        p.createIndex('classId',     'classId',     { unique: false })
+        p.createIndex('term',        'term',        { unique: false })
+        p.createIndex('year',        'year',        { unique: false })
+      } else if (oldVer < 4) {
+        const p = e.target.transaction.objectStore(STORES.PAYMENTS)
+        if (!p.indexNames.contains('classId')) p.createIndex('classId', 'classId', { unique: false })
+        if (!p.indexNames.contains('term'))    p.createIndex('term',    'term',    { unique: false })
+        if (!p.indexNames.contains('year'))    p.createIndex('year',    'year',    { unique: false })
       }
-      // ── v3: Attendance store ─────────────────────────────────────
-      // key: 'classId:YYYY-MM-DD'
-      // value: { classId, className, date, teacherNpub, records: [{ npub, name, status }] }
+
       if (!db.objectStoreNames.contains(STORES.ATTENDANCE)) {
         const at = db.createObjectStore(STORES.ATTENDANCE, { keyPath: 'key' })
         at.createIndex('classId',     'classId',     { unique: false })
         at.createIndex('date',        'date',        { unique: false })
         at.createIndex('teacherNpub', 'teacherNpub', { unique: false })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.FEES)) {
+        const f = db.createObjectStore(STORES.FEES, { keyPath: 'key' })
+        f.createIndex('year', 'year', { unique: false })
+        f.createIndex('term', 'term', { unique: false })
+      }
+
+      // ── PROFILES (v5) ─────────────────────────────────────────────
+      // key: hex pubkey (pk)
+      // value: { pk, name, display_name, about, picture, createdAt }
+      if (!db.objectStoreNames.contains(STORES.PROFILES)) {
+        db.createObjectStore(STORES.PROFILES, { keyPath: 'pk' })
       }
     }
 
@@ -123,15 +144,14 @@ export async function replaceAllTeachers(teachers) {
 }
 
 // ── CLASSES ───────────────────────────────────────────────────────────
-export async function getClassesByTeacher(teacherNpub) {
-  const { store } = await tx(STORES.CLASSES)
-  const index     = store.index('teacherNpub')
-  return promisify(index.getAll(teacherNpub))
-}
-
 export async function getClasses() {
   const { store } = await tx(STORES.CLASSES)
   return promisify(store.getAll())
+}
+
+export async function getClassesByTeacher(teacherNpub) {
+  const { store } = await tx(STORES.CLASSES)
+  return promisify(store.index('teacherNpub').getAll(teacherNpub))
 }
 
 export async function saveClass(cls) {
@@ -162,8 +182,17 @@ export async function getPayments() {
 
 export async function getPaymentsByStudent(studentNpub) {
   const { store } = await tx(STORES.PAYMENTS)
-  const index     = store.index('studentNpub')
-  return promisify(index.getAll(studentNpub))
+  return promisify(store.index('studentNpub').getAll(studentNpub))
+}
+
+export async function getPaymentsByClass(classId) {
+  const { store } = await tx(STORES.PAYMENTS)
+  return promisify(store.index('classId').getAll(classId))
+}
+
+export async function getPaymentsByTerm(term, year) {
+  const all = await getPayments()
+  return all.filter(p => p.term === term && p.year === year)
 }
 
 export async function savePayment(payment) {
@@ -186,16 +215,35 @@ export async function replaceAllPayments(payments) {
   })
 }
 
-// ── ATTENDANCE ────────────────────────────────────────────────────────
-// key format: 'classId:YYYY-MM-DD'
+// ── FEES ──────────────────────────────────────────────────────────────
+export async function getFeeStructure(year, term) {
+  const { store } = await tx(STORES.FEES)
+  return promisify(store.get(`${year}-${term}`))
+}
 
+export async function getAllFeeStructures() {
+  const { store } = await tx(STORES.FEES)
+  return promisify(store.getAll())
+}
+
+export async function saveFeeStructure(structure) {
+  const key = `${structure.year}-${structure.term}`
+  const { store } = await tx(STORES.FEES, 'readwrite')
+  return promisify(store.put({ ...structure, key }))
+}
+
+export async function deleteFeeStructure(year, term) {
+  const { store } = await tx(STORES.FEES, 'readwrite')
+  return promisify(store.delete(`${year}-${term}`))
+}
+
+// ── ATTENDANCE ────────────────────────────────────────────────────────
 export async function getAttendance(classId, date) {
   const { store } = await tx(STORES.ATTENDANCE)
   return promisify(store.get(`${classId}:${date}`))
 }
 
 export async function saveAttendance(record) {
-  // record must have: { classId, className, date, teacherNpub, records: [...] }
   const key = `${record.classId}:${record.date}`
   const { store } = await tx(STORES.ATTENDANCE, 'readwrite')
   return promisify(store.put({ ...record, key }))
@@ -203,33 +251,46 @@ export async function saveAttendance(record) {
 
 export async function getAttendanceByClass(classId) {
   const { store } = await tx(STORES.ATTENDANCE)
-  const index     = store.index('classId')
-  return promisify(index.getAll(classId))
+  return promisify(store.index('classId').getAll(classId))
 }
 
 export async function getAttendanceByDate(date) {
   const { store } = await tx(STORES.ATTENDANCE)
-  const index     = store.index('date')
-  return promisify(index.getAll(date))
+  return promisify(store.index('date').getAll(date))
 }
 
 export async function getAttendanceByTeacher(teacherNpub) {
   const { store } = await tx(STORES.ATTENDANCE)
-  const index     = store.index('teacherNpub')
-  return promisify(index.getAll(teacherNpub))
+  return promisify(store.index('teacherNpub').getAll(teacherNpub))
+}
+
+// ── PROFILES (kind:0) ─────────────────────────────────────────────────
+// Stored by hex pubkey. Shape: { pk, name, display_name, about, picture, createdAt }
+
+export async function getProfile(pk) {
+  const { store } = await tx(STORES.PROFILES)
+  return promisify(store.get(pk))
+}
+
+export async function saveProfile(pk, content, createdAt) {
+  // Only overwrite if newer
+  const existing = await getProfile(pk)
+  if (existing && existing.createdAt >= createdAt) return existing
+  const record = { pk, ...content, createdAt }
+  const { store } = await tx(STORES.PROFILES, 'readwrite')
+  await promisify(store.put(record))
+  return record
 }
 
 // ── ROLE DETECTION ────────────────────────────────────────────────────
 export async function detectRole(npub) {
   const [school, teachers, classes] = await Promise.all([
-    getSchool(),
-    getTeachers(),
-    getClasses(),
+    getSchool(), getTeachers(), getClasses(),
   ])
-  if (school?.adminNpub === npub)                return 'admin'
-  if (teachers.find(t => t.npub === npub))        return 'teacher'
+  if (school?.adminNpub === npub)                   return 'admin'
+  if (teachers.find(t => t.npub === npub))          return 'teacher'
   for (const cls of classes) {
-    if (cls.students?.find(s => s.npub === npub)) return 'student'
+    if (cls.students?.find(s => s.npub === npub))   return 'student'
   }
   return null
 }

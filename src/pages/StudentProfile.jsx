@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { finalizeEvent } from 'nostr-tools'
 import { Copy, Check, Eye, EyeOff, Shield, QrCode, User, Camera, Loader, Zap, School } from 'lucide-react'
-import { getClasses, getSchool } from '../db'
+import { getClasses, getSchool, saveSchool } from '../db'
 import { uploadImage, skFromNsec } from '../nostrSync'
 import { useNostrProfile } from '../hooks/useNostrProfile'
-import { updateCachedProfile } from '../utils/profileCache'
+import { saveProfile } from '../db'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
@@ -24,7 +24,7 @@ export default function StudentProfile({ user, syncState }) {
   const [tab, setTab]                     = useState('profile')
   const [displayName, setDisplayName]     = useState(user?.name   || '')
   const [about, setAbout]                 = useState('')
-  const [previewAvatar, setPreviewAvatar] = useState(user?.avatar || '')
+  const [previewAvatar, setPreviewAvatar] = useState('')
   const [schoolName, setSchoolName]       = useState('')
   const [studentRecord, setStudentRecord] = useState(null)
   const [nsecVisible, setNsecVisible]     = useState(false)
@@ -46,23 +46,122 @@ export default function StudentProfile({ user, syncState }) {
     if (!profile) return
     setDisplayName(v => v || profile.name || profile.display_name || user?.name || '')
     setAbout(v       => v || profile.about || '')
-    setPreviewAvatar(v => v || profile.picture || '')
+    setPreviewAvatar(v => profile.picture || v || user?.avatar || '')
   }, [profile])
 
   // School name + student record from IndexedDB
   useEffect(() => {
-    getSchool().then(s => {
-      setSchoolName(s?.schoolName || '')
-      if (!s?.schoolName) {
-        try { const c = localStorage.getItem('gb_school_cache'); if (c) setSchoolName(JSON.parse(c).schoolName||'') } catch {}
-      }
-    })
-    getClasses().then(classes => {
+    // 1. Sync read localStorage instantly — zero flash
+    try {
+      const c = localStorage.getItem('gb_school_cache')
+      const p = c && JSON.parse(c)
+      if (p?.schoolName) setSchoolName(p.schoolName)
+    } catch {}
+
+    // 2. Confirm from IndexedDB — then Nostr fallback if still empty
+    getSchool().then(async s => {
+      if (s?.schoolName) { setSchoolName(s.schoolName); return }
+
+      // 3. School name missing — search Nostr for gradebase-school event
+      // Student may not know adminNpub, so we search broadly by tag
+      try {
+        const { nip19 } = await import('nostr-tools')
+        const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
+        const TAG    = 'gradebase-school'
+        const PREFIX = 'SCHOOL:'
+
+        // If we have adminNpub use it for a targeted search, else search by tag only
+        const filter = s?.adminNpub
+          ? { kinds:[1], authors:[nip19.decode(s.adminNpub).data], '#t':[TAG], limit:1 }
+          : { kinds:[1], '#t':[TAG], limit:5 }
+
+        let resolved = false
+        await Promise.any(RELAYS.map(relay => new Promise((res, rej) => {
+          const ws  = new WebSocket(relay)
+          const sub = 'sc-' + Math.random().toString(36).slice(2, 7)
+          ws.onopen  = () => ws.send(JSON.stringify(['REQ', sub, filter]))
+          ws.onmessage = ({ data }) => {
+            if (resolved) return
+            try {
+              const msg = JSON.parse(data)
+              if (msg[0] !== 'EVENT') return
+              const ev  = msg[2]
+              const raw = ev.content.startsWith(PREFIX) ? ev.content.slice(PREFIX.length) : ev.content
+              const d   = JSON.parse(raw)
+              if (d.name) {
+                resolved = true
+                const adminNpub = nip19.npubEncode(ev.pubkey)
+                const schoolData = {
+                  adminNpub,
+                  adminName:  d.adminName || '',
+                  schoolName: d.name,
+                  about:      d.about    || '',
+                  avatar:     d.avatar   || '',
+                  createdAt:  d.createdAt || Date.now(),
+                }
+                saveSchool(schoolData).catch(() => {})
+                try { localStorage.setItem('gb_school_cache', JSON.stringify(schoolData)) } catch {}
+                setSchoolName(d.name)
+                ws.close(); res()
+              }
+            } catch {}
+          }
+          ws.onerror = rej
+          setTimeout(rej, 10000)
+        })))
+      } catch {}
+    }).catch(() => {})
+    const findInClasses = (classes) => {
       for (const cls of (classes||[])) {
         const found = cls.students?.find(s => s.npub === user.npub)
-        if (found) { setStudentRecord({ ...found, className: cls.name }); break }
+        if (found) { setStudentRecord({ ...found, className: cls.name, classId: cls.id, teacherNpub: cls.teacherNpub }); return true }
       }
-    })
+      return false
+    }
+
+    getClasses().then(async classes => {
+      // Found in local DB — done
+      if (findInClasses(classes)) return
+
+      // Not found — fetch from Nostr using known teacher npubs
+      // Try to get teacher npubs from DB teachers list or existing classes
+      try {
+        const { nip19 } = await import('nostr-tools')
+        const { getTeachers } = await import('../db')
+        const teachers = await getTeachers()
+
+        // Collect all possible teacher npubs from teachers store + existing classes
+        const teacherNpubs = [
+          ...teachers.map(t => t.npub),
+          ...classes.map(c => c.teacherNpub),
+        ].filter(Boolean).filter((v,i,a) => a.indexOf(v) === i)
+
+        if (!teacherNpubs.length) return
+
+        const teacherPks = teacherNpubs.map(n => { try { return nip19.decode(n).data } catch { return null } }).filter(Boolean)
+        const RELAYS  = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
+        const TAG     = 'gradebase-classes'
+        const PREFIX  = 'CLASSES:'
+
+        await Promise.any(RELAYS.map(relay => new Promise((res, rej) => {
+          const ws  = new WebSocket(relay)
+          const sub = 'cls-' + Math.random().toString(36).slice(2, 7)
+          ws.onopen = () => ws.send(JSON.stringify(['REQ', sub, { kinds:[1], authors: teacherPks, '#t':[TAG], limit: teacherPks.length }]))
+          ws.onmessage = ({ data }) => {
+            try {
+              const msg = JSON.parse(data)
+              if (msg[0] !== 'EVENT') return
+              const ev  = msg[2]
+              const raw = ev.content.startsWith(PREFIX) ? ev.content.slice(PREFIX.length) : ev.content
+              const incoming = JSON.parse(raw)
+              if (findInClasses(incoming)) { ws.close(); res() }
+            } catch {}
+          }
+          ws.onerror = rej
+          setTimeout(rej, 10000)
+        })))
+      } catch {}
+    }).catch(() => {})
   }, [user.npub])
 
   // Fallback name from student record if kind:0 has no name yet
@@ -103,7 +202,7 @@ export default function StudentProfile({ user, syncState }) {
         ws.onerror = rej; setTimeout(rej, 8000)
       })))
       // Update cache immediately — no stale flash on next visit
-      updateCachedProfile(user.pk, content)
+      saveProfile(user.pk, content, Math.floor(Date.now()/1000))
       setSaved(true); setTimeout(() => setSaved(false), 2500)
     } catch (e) { console.error(e) }
     setSaving(false)

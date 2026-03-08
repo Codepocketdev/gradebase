@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { finalizeEvent } from 'nostr-tools'
 import { ArrowLeft, Camera, User, School, Zap, Shield, Eye, EyeOff, Copy, Check, Loader, Users } from 'lucide-react'
-import { getSchool, getTeachers, getClasses } from '../db'
-import { uploadImage, skFromNsec } from '../nostrSync'
+import { getSchool, saveSchool, getTeachers, getClasses } from '../db'
+import { uploadImage, skFromNsec, publishSchool } from '../nostrSync'
 import { useNostrProfile } from '../hooks/useNostrProfile'
-import { updateCachedProfile } from '../utils/profileCache'
+import { saveProfile } from '../db'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
@@ -15,6 +15,7 @@ export default function AdminProfile({ user, syncState, onBack, onUpdateUser }) 
   const [about, setAbout]                 = useState('')
   const [previewAvatar, setPreviewAvatar] = useState(user?.avatar  || '')
   const [schoolName, setSchoolName]       = useState('')
+  const [editSchoolName, setEditSchoolName] = useState('')
   const [teacherCount, setTeacherCount]   = useState(0)
   const [studentCount, setStudentCount]   = useState(0)
   const [showNsec, setShowNsec]           = useState(false)
@@ -31,16 +32,29 @@ export default function AdminProfile({ user, syncState, onBack, onUpdateUser }) 
     if (!profile) return
     setDisplayName(v => v || profile.name || profile.display_name || user?.name || '')
     setAbout(v       => v || profile.about || '')
-    setPreviewAvatar(v => v || profile.picture || '')
+    setPreviewAvatar(v => profile.picture || v || user?.avatar || '')
   }, [profile])
 
   useEffect(() => {
-    getSchool().then(s => {
-      setSchoolName(s?.schoolName || '')
-      if (!s?.schoolName) {
-        try { const c = localStorage.getItem('gb_school_cache'); if (c) setSchoolName(JSON.parse(c).schoolName || '') } catch {}
+    // Read localStorage instantly (sync) — zero flash
+    try {
+      const cached = localStorage.getItem('gb_school_cache')
+      if (cached) {
+        const parsed = JSON.parse(cached)
+        if (parsed?.schoolName) setSchoolName(parsed.schoolName)
       }
-    })
+    } catch {}
+    // Then confirm/update from IndexedDB
+    // Sync read from localStorage — zero wait
+    try {
+      const c = localStorage.getItem('gb_school_cache')
+      const p = c && JSON.parse(c)
+      if (p?.schoolName) { setSchoolName(p.schoolName); setEditSchoolName(p.schoolName) }
+    } catch {}
+    // Confirm from IndexedDB
+    getSchool().then(s => {
+      if (s?.schoolName) { setSchoolName(s.schoolName); setEditSchoolName(s.schoolName) }
+    }).catch(() => {})
     getTeachers().then(t => setTeacherCount(t?.length || 0))
     getClasses().then(cls => setStudentCount((cls||[]).reduce((s,c) => s+(c.students?.length||0), 0)))
   }, [])
@@ -60,7 +74,10 @@ export default function AdminProfile({ user, syncState, onBack, onUpdateUser }) 
     setSaving(true)
     try {
       const sk = skFromNsec(user.nsec)
-      const content = { name: displayName.trim()||user.name||'Admin', display_name: displayName.trim()||user.name||'Admin', about: about.trim(), picture: previewAvatar||'' }
+      const adminName = displayName.trim() || user.name || 'Admin'
+
+      // ── Publish kind:0 profile ──────────────────────────────────
+      const content = { name: adminName, display_name: adminName, about: about.trim(), picture: previewAvatar || '' }
       const event = finalizeEvent({ kind:0, created_at: Math.floor(Date.now()/1000), tags:[], content: JSON.stringify(content) }, sk)
       await Promise.any(RELAYS.map(r => new Promise((res, rej) => {
         const ws = new WebSocket(r)
@@ -68,11 +85,27 @@ export default function AdminProfile({ user, syncState, onBack, onUpdateUser }) 
         ws.onmessage = ({ data }) => { try { if (JSON.parse(data)[0]==='OK') { ws.close(); res() } } catch {} }
         ws.onerror = rej; setTimeout(rej, 8000)
       })))
-      // Update cache immediately — no stale flash next time
-      updateCachedProfile(user.pk, content)
-      if (onUpdateUser) onUpdateUser({ ...user, name: displayName.trim(), avatar: previewAvatar })
+      saveProfile(user.pk, content, Math.floor(Date.now()/1000))
+
+      // ── Re-publish school event — always merge with existing data ──
+      // Read existing school first so we NEVER lose the schoolName
+      const existingSchool = await getSchool()
+      const mergedSchoolName = editSchoolName.trim() || existingSchool?.schoolName || schoolName || ''
+      const schoolData = {
+        adminNpub:  user.npub,
+        adminName:  adminName,
+        schoolName: mergedSchoolName,
+        about:      about.trim(),
+        avatar:     previewAvatar || '',
+        createdAt:  existingSchool?.createdAt || Date.now(),
+      }
+      await saveSchool(schoolData)
+      setSchoolName(mergedSchoolName)
+      publishSchool(user.nsec, schoolData).catch(console.warn)
+
+      if (onUpdateUser) onUpdateUser({ ...user, name: adminName, avatar: previewAvatar })
       setSaved(true); setTimeout(() => setSaved(false), 2500)
-    } catch {}
+    } catch (e) { console.error('save error:', e) }
     setSaving(false)
   }
 
@@ -110,8 +143,8 @@ export default function AdminProfile({ user, syncState, onBack, onUpdateUser }) 
       </div>
 
       <div style={C.card}>
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><School size={14} color="var(--accent)"/><span style={C.label}>School</span></div>
-        <div style={{fontSize:18,fontWeight:800,color:'var(--text)',marginBottom:10}}>{schoolName||'—'}</div>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><School size={14} color="var(--accent)"/><span style={C.label}>School Name</span></div>
+        <input style={{...C.input,marginBottom:8}} value={editSchoolName} onChange={e=>setEditSchoolName(e.target.value)} placeholder="Enter school name"/>
         <div style={{display:'flex',gap:24}}>
           <div><div style={{fontSize:20,fontWeight:800,color:'var(--accent)'}}>{teacherCount}</div><div style={{fontSize:11,color:'var(--muted)',fontWeight:700}}>Teachers</div></div>
           <div><div style={{fontSize:20,fontWeight:800,color:'var(--accent)'}}>{studentCount}</div><div style={{fontSize:11,color:'var(--muted)',fontWeight:700}}>Students</div></div>

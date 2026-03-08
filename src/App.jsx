@@ -22,6 +22,8 @@ import Settings       from './pages/Settings'
 import AdminProfile   from './pages/AdminProfile'
 import TeacherProfile from './pages/TeacherProfile'
 import Attendance     from './pages/Attendance'
+import Payments       from './pages/payments/index'
+import FeeStructure   from './pages/FeeStructure'
 
 // Layout
 import MoreLayout, { MORE_ITEMS } from './layout/MoreLayout'
@@ -71,7 +73,12 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
           ? <StudentProfile user={user} syncState={syncState} />
           : <Students user={user} userRole={userRole} dataVersion={dataVersion} />
 
+      // ── Student fees / payments (new) ─────────────────────────────
       case 'payments':
+        return <Payments user={user} userRole={userRole} dataVersion={dataVersion} />
+
+      // ── School ledger (old Transactions, moved to More) ────────────
+      case 'school-ledger':
         return (
           <Transactions
             transactions={transactions} onAdd={addTransaction} onDelete={deleteTransaction}
@@ -90,6 +97,9 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
 
       case 'classes':
         return <Classes user={user} userRole={userRole} dataVersion={dataVersion} />
+
+      case 'fee-structure':
+        return isAdmin ? <FeeStructure user={user} onBack={() => setPage('settings')} /> : null
 
       case 'reports':
         return <Reports transactions={transactions} stats={stats} spentByCategory={spentByCategory} schoolName={schoolName} fmt={fmt} />

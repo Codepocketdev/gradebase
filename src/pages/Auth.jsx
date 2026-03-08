@@ -161,7 +161,7 @@ export default function Auth({ onAuth }) {
           setLoading(false); return
         }
         const name = await getNameForNpub(npub, 'student')
-        onAuth({ nsec: nsecInput.trim(), npub, pk, role: 'student', name })
+        onAuth({ nsec: nsecInput.trim(), npub, pk, role: 'student', name, teacherNpub: teacherNpub.trim() || undefined })
       }
 
     } catch (e) {

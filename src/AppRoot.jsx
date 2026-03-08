@@ -4,9 +4,10 @@ import Auth from './pages/Auth'
 import App from './App'
 import {
   getSchool, saveSchool, detectRole,
+  getTeachers, getClasses,
   replaceAllTeachers, replaceAllClasses, replaceAllPayments,
 } from './db'
-import { startSync, stopSync, fetchAndSeed } from './nostrSync'
+import { startSync, stopSync, fetchAndSeed, fetchAndSeedAttendance } from './nostrSync'
 import { useTheme } from './hooks/useTheme'
 
 // ── Restoring screen shown while we re-seed from Nostr ────────────────
@@ -25,7 +26,7 @@ function RestoringScreen() {
         <div style={{ width: 24, height: 24, borderRadius: '50%', border: '3px solid transparent', borderTopColor: 'var(--accent)', animation: 'spin 0.9s linear infinite' }} />
       </div>
       <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>Restoring your data…</div>
-      <div style={{ fontSize: 12, color: 'var(--muted)' }}>Fetching classes from Nostr</div>
+      <div style={{ fontSize: 12, color: 'var(--muted)' }}>Fetching from Nostr</div>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   )
@@ -39,7 +40,7 @@ export default function AppRoot() {
   const [dataVersion, setDataVersion] = useState(0)
   const [splashDone, setSplashDone]   = useState(false)
   const [initTarget, setInitTarget]   = useState(null)
-  const [restoring, setRestoring]     = useState(false)   // ← blocks UI during reseed
+  const [restoring, setRestoring]     = useState(false)
 
   // ── On mount: check persisted session ─────────────────────────────
   useEffect(() => {
@@ -54,7 +55,7 @@ export default function AppRoot() {
 
             let role = await detectRole(parsed.npub)
 
-            // ── DB is cold — BLOCK on reseed so classes are ready ─────
+            // ── DB is cold — BLOCK on reseed so data is ready ─────────
             if (!role && parsed.role) {
               role = parsed.role
               const meta = (() => {
@@ -123,37 +124,95 @@ export default function AppRoot() {
           return
         }
 
-        // ── For teacher: always re-fetch own classes on every boot ───
-        // This ensures classes are never lost even on fresh device/cache clear
-        if (user.role === 'teacher') {
-          const meta = (() => {
-            try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
-          })()
-          fetchAndSeed({
-            role:      'teacher',
-            userNsec:  user.nsec,
-            userPk:    user.pk,
-            adminNpub: meta.adminNpub || undefined,
-          }).then(result => {
+        const meta = (() => {
+          try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
+        })()
+
+        // ── Reseed + attendance for every role on every boot ──────────
+        // This means a cache clear is self-healing — everything comes back
+        const bootReseed = async () => {
+          if (user.role === 'admin') {
+            const result = await fetchAndSeed({
+              role:     'admin',
+              userNsec: user.nsec,
+              userPk:   user.pk,
+            }).catch(() => ({ found: false }))
             if (result?.found) {
-              console.log('[AppRoot] teacher boot resync done — bumping dataVersion')
+              console.log('[AppRoot] admin boot resync done')
               setDataVersion(v => v + 1)
             }
-          }).catch(console.warn)
+            // Attendance for all teachers
+            try {
+              const { nip19 } = await import('nostr-tools')
+              const teachers   = await getTeachers()
+              const teacherPks = teachers
+                .map(t => { try { return nip19.decode(t.npub).data } catch { return null } })
+                .filter(Boolean)
+              if (teacherPks.length) {
+                await fetchAndSeedAttendance(teacherPks)
+                setDataVersion(v => v + 1)
+              }
+            } catch {}
+          }
+
+          if (user.role === 'teacher') {
+            const result = await fetchAndSeed({
+              role:      'teacher',
+              userNsec:  user.nsec,
+              userPk:    user.pk,
+              adminNpub: meta.adminNpub || undefined,
+            }).catch(() => ({ found: false }))
+            if (result?.found) {
+              console.log('[AppRoot] teacher boot resync done')
+              setDataVersion(v => v + 1)
+            }
+            // Attendance for own classes
+            await fetchAndSeedAttendance([user.pk])
+            setDataVersion(v => v + 1)
+          }
+
+          if (user.role === 'student') {
+            if (meta.teacherNpub) {
+              const result = await fetchAndSeed({
+                role:        'student',
+                userNsec:    user.nsec,
+                userPk:      user.pk,
+                teacherNpub: meta.teacherNpub,
+              }).catch(() => ({ found: false }))
+              if (result?.found) {
+                console.log('[AppRoot] student boot resync done')
+                setDataVersion(v => v + 1)
+              }
+            }
+            // Attendance from student's teacher
+            try {
+              const { nip19 } = await import('nostr-tools')
+              const classes    = await getClasses()
+              const myClass    = classes.find(c => c.students?.some(s => s.npub === user.npub))
+              const tNpub      = myClass?.teacherNpub || meta.teacherNpub
+              if (tNpub) {
+                const teacherPk = nip19.decode(tNpub).data
+                await fetchAndSeedAttendance([teacherPk])
+                setDataVersion(v => v + 1)
+              }
+            } catch {}
+          }
         }
 
-        // ── For admin: re-fetch all teacher classes on every boot ────
-        if (user.role === 'admin') {
-          fetchAndSeed({
-            role:     'admin',
-            userNsec: user.nsec,
-            userPk:   user.pk,
-          }).then(result => {
-            if (result?.found) {
-              console.log('[AppRoot] admin boot resync done — bumping dataVersion')
-              setDataVersion(v => v + 1)
+        // Students: await reseed first so school.adminNpub is in DB before startSync
+        // Teacher/Admin: run in background, they already have adminPk
+        if (user.role === 'student') {
+          await bootReseed().catch(console.warn)
+          // Re-read adminPk now that school is seeded
+          try {
+            const school = await getSchool()
+            if (school?.adminNpub) {
+              const { nip19 } = await import('nostr-tools')
+              adminPk = nip19.decode(school.adminNpub).data
             }
-          }).catch(console.warn)
+          } catch {}
+        } else {
+          bootReseed().catch(console.warn)
         }
 
         await startSync(user.nsec, user.pk, adminPk, user.role, async (type) => {
