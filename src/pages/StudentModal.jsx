@@ -1,11 +1,10 @@
-import { useState, useEffect } from 'react'
-import { SimplePool } from 'nostr-tools/pool'
+import { useState, useMemo } from 'react'
+import { nip19 } from 'nostr-tools'
+import { useNostrProfile } from '../hooks/useNostrProfile'
 import {
   X, Copy, CheckCircle, Eye, EyeOff,
   Shield, QrCode, User, Trash2, AlertTriangle
 } from 'lucide-react'
-
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
 function QRCode({ value, size = 200 }) {
   return (
@@ -20,57 +19,38 @@ function QRCode({ value, size = 200 }) {
 const short = (str, a = 10, b = 6) => str ? `${str.slice(0, a)}…${str.slice(-b)}` : ''
 
 export default function StudentModal({ student, userRole, onClose, onDelete }) {
-  const [tab, setTab] = useState('profile')
-  const [nostrProfile, setNostrProfile] = useState(null)
-  const [loadingProfile, setLoadingProfile] = useState(false)
-  const [nsecVisible, setNsecVisible] = useState(false)
-  const [copied, setCopied] = useState('')
+  // Decode npub → hex pk for the profile hook (same hook StudentProfile uses)
+  const studentPk = useMemo(() => {
+    try { return nip19.decode(student.npub).data } catch { return null }
+  }, [student.npub])
+
+  const { profile: nostrProfile, loading: loadingProfile } = useNostrProfile(studentPk)
+
+  const [tab, setTab]                       = useState('profile')
+  const [nsecVisible, setNsecVisible]       = useState(false)
+  const [copied, setCopied]                 = useState('')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [imgFailed, setImgFailed]           = useState(false)
 
   const isStudent = userRole === 'student'
   const isAdmin   = userRole === 'admin'
   const isTeacher = userRole === 'teacher'
 
-  // Everyone sees Profile + Keys + QR
-  // Keys tab label changes based on role
   const tabs = [
-    { id: 'profile', label: 'Profile',                          Icon: User   },
+    { id: 'profile', label: 'Profile',                            Icon: User   },
     { id: 'keys',    label: isStudent ? 'My Keys' : 'Access Key', Icon: Shield },
-    { id: 'qr',      label: 'QR Code',                          Icon: QrCode },
+    { id: 'qr',      label: 'QR Code',                            Icon: QrCode },
   ]
-
-  // Fetch Nostr kind:0 profile
-  useEffect(() => {
-    if (!student?.pk) return
-    setLoadingProfile(true)
-    const pool = new SimplePool()
-    let sub
-    try {
-      sub = pool.subscribe(
-        RELAYS,
-        [{ kinds: [0], authors: [student.pk], limit: 1 }],
-        {
-          onevent(e) {
-            try { setNostrProfile(JSON.parse(e.content)) } catch {}
-            setLoadingProfile(false)
-          },
-          oneose() { setLoadingProfile(false) },
-        }
-      )
-    } catch { setLoadingProfile(false) }
-    const t = setTimeout(() => { try { sub?.close() } catch {} setLoadingProfile(false) }, 6000)
-    return () => { clearTimeout(t); try { sub?.close() } catch {} }
-  }, [student?.pk])
 
   const copy = async (val, key) => {
     try { await navigator.clipboard.writeText(val); setCopied(key); setTimeout(() => setCopied(''), 2000) } catch {}
   }
 
-  const initials   = student.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+  const initials    = student.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
   const displayName = nostrProfile?.name || nostrProfile?.display_name || student.name
-  const avatarSrc  = nostrProfile?.picture || null
+  const avatarSrc   = (!imgFailed && nostrProfile?.picture) || null
 
-  // ── Delete confirm screen ──
+  // ── Delete confirm screen ───────────────────────────────────────────────────
   if (showDeleteConfirm) return (
     <div style={S.overlay} onClick={e => e.target === e.currentTarget && setShowDeleteConfirm(false)}>
       <div style={{ ...S.sheet, padding: '32px 20px 44px' }}>
@@ -103,20 +83,15 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 6, marginBottom: 22 }}>
           {tabs.map(({ id, label, Icon }) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              style={{
-                flex: 1, padding: '9px 4px',
-                borderRadius: 10,
-                border: `1.5px solid ${tab === id ? '#00c97a' : 'var(--border)'}`,
-                background: tab === id ? '#f0fdf4' : 'transparent',
-                color: tab === id ? '#00c97a' : 'var(--muted)',
-                fontWeight: 700, fontSize: 12,
-                cursor: 'pointer', fontFamily: 'var(--font-display)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-              }}
-            >
+            <button key={id} onClick={() => setTab(id)} style={{
+              flex: 1, padding: '9px 4px', borderRadius: 10,
+              border: `1.5px solid ${tab === id ? '#00c97a' : 'var(--border)'}`,
+              background: tab === id ? '#f0fdf4' : 'transparent',
+              color: tab === id ? '#00c97a' : 'var(--muted)',
+              fontWeight: 700, fontSize: 12, cursor: 'pointer',
+              fontFamily: 'var(--font-display)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            }}>
               <Icon size={13} /> {label}
             </button>
           ))}
@@ -129,14 +104,15 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
               <div style={{
                 width: 68, height: 68, borderRadius: '50%',
-                background: student.grad,
+                background: avatarSrc ? 'transparent' : (student.grad || 'linear-gradient(135deg,#00c97a,#00a862)'),
                 display: 'grid', placeItems: 'center',
                 fontSize: 22, fontWeight: 800, color: '#fff',
                 flexShrink: 0, overflow: 'hidden',
-                border: '2px solid #e2e8f0',
+                border: '2px solid var(--border)',
               }}>
                 {avatarSrc
-                  ? <img src={avatarSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.target.style.display = 'none' }} />
+                  ? <img src={avatarSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      onError={() => setImgFailed(true)} />
                   : initials
                 }
               </div>
@@ -171,21 +147,11 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
               </div>
             </div>
 
-            {/* Payment balance — visible to admin and teacher */}
-            {(isAdmin || isTeacher) && (
-              <div style={S.infoRow}>
-                <div style={S.infoLabel}>Payment Balance</div>
-                <div style={{ fontSize: 14, fontWeight: 800, color: '#00c97a' }}>KSh 0.00 paid</div>
-                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>No payments recorded yet</div>
-              </div>
-            )}
 
             {/* Remove student — admin and teacher */}
             {onDelete && (
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                style={{ ...S.btn, background: '#fef2f2', color: '#ef4444', border: '1.5px solid #fecaca', marginTop: 8 }}
-              >
+              <button onClick={() => setShowDeleteConfirm(true)}
+                style={{ ...S.btn, background: '#fef2f2', color: '#ef4444', border: '1.5px solid #fecaca', marginTop: 8 }}>
                 <Trash2 size={14} /> Remove Student
               </button>
             )}
@@ -211,10 +177,9 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
           </div>
         )}
 
-        {/* ── KEYS TAB — student only ── */}
+        {/* ── KEYS TAB ── */}
         {tab === 'keys' && (
           <div>
-            {/* Context banner — different per role */}
             {isStudent ? (
               <div style={{ fontSize: 12, color: '#92400e', lineHeight: 1.7, padding: '10px 13px', background: '#fff7ed', borderRadius: 10, border: '1px solid #fed7aa', display: 'flex', gap: 8, marginBottom: 16 }}>
                 <Shield size={14} color="#f97316" style={{ flexShrink: 0, marginTop: 1 }} />
@@ -290,23 +255,16 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
 
 const S = {
   overlay: {
-    position: 'fixed',
-    top: 0, left: 0, right: 0,
-    bottom: 64, /* exact height of bottom nav */
-    background: 'rgba(0,0,0,0.4)',
-    backdropFilter: 'blur(4px)',
-    zIndex: 200,
-    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    position: 'fixed', top: 0, left: 0, right: 0, bottom: 64,
+    background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
+    zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
   },
   sheet: {
     width: '100%', maxWidth: 480,
-    background: 'var(--surface)',
-    borderRadius: '20px 20px 0 0',
-    padding: '24px 20px 32px',
-    position: 'relative',
+    background: 'var(--surface)', borderRadius: '20px 20px 0 0',
+    padding: '24px 20px 32px', position: 'relative',
     boxShadow: '0 -8px 40px rgba(0,0,0,0.15)',
-    maxHeight: '100%',
-    overflowY: 'auto',
+    maxHeight: '100%', overflowY: 'auto',
   },
   closeBtn: {
     position: 'absolute', top: 18, right: 18,
@@ -320,41 +278,24 @@ const S = {
     borderRadius: 11, padding: '11px 13px', marginBottom: 8,
   },
   infoLabel: {
-    fontSize: 10, fontWeight: 700,
-    textTransform: 'uppercase', letterSpacing: 0.8,
-    color: 'var(--muted)', marginBottom: 5,
+    fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: 0.8, color: 'var(--muted)', marginBottom: 5,
   },
-  mono: {
-    fontFamily: 'var(--font-mono, monospace)',
-    fontSize: 12, color: 'var(--text)',
-  },
-  iconBtn: {
-    background: 'none', border: 'none',
-    cursor: 'pointer', padding: 4, flexShrink: 0,
-    display: 'flex', alignItems: 'center',
-  },
+  mono: { fontFamily: 'var(--font-mono, monospace)', fontSize: 12, color: 'var(--text)' },
+  iconBtn: { background: 'none', border: 'none', cursor: 'pointer', padding: 4, flexShrink: 0, display: 'flex', alignItems: 'center' },
   btn: {
-    width: '100%', padding: 13,
-    borderRadius: 12, border: 'none',
-    fontSize: 14, fontWeight: 700,
-    cursor: 'pointer',
+    width: '100%', padding: 13, borderRadius: 12, border: 'none',
+    fontSize: 14, fontWeight: 700, cursor: 'pointer',
     fontFamily: 'var(--font-display)',
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
   },
-  keySection: {
-    background: 'var(--bg)', border: '1px solid var(--border)',
-    borderRadius: 12, padding: 14,
-  },
-  keyLabel: {
-    fontSize: 10, fontWeight: 800,
-    textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8,
-  },
+  keySection: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 14 },
+  keyLabel:   { fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 },
   copyBtn: {
     display: 'inline-flex', alignItems: 'center', gap: 6,
     marginTop: 10, background: 'transparent',
-    border: '1.5px solid var(--border)',
-    color: 'var(--muted)', padding: '7px 14px',
-    borderRadius: 8, fontSize: 12, fontWeight: 600,
+    border: '1.5px solid var(--border)', color: 'var(--muted)',
+    padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
     cursor: 'pointer', fontFamily: 'var(--font-display)',
   },
 }
