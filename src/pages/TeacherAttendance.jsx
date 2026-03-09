@@ -1,6 +1,7 @@
 /**
  * TeacherAttendance.jsx
  * Mark present/absent, QR scan, save to Nostr + IndexedDB, history + Excel export.
+ * Self-sufficient: if classes not in DB, fetches from Nostr in BG automatically.
  */
 import { useState, useEffect, useCallback } from 'react'
 import {
@@ -8,8 +9,9 @@ import {
   ChevronRight, Users, Search, X,
   Check, Loader, BarChart2, School
 } from 'lucide-react'
-import { getClasses, getAttendance, saveAttendance, getAttendanceByClass } from '../db'
+import { getAttendance, saveAttendance, getAttendanceByClass } from '../db'
 import { publishAttendance } from '../nostrSync'
+import { useTeacherClasses } from '../hooks/useTeacherClasses'
 import QRScanner from './QRScanner'
 
 const today   = () => new Date().toISOString().slice(0, 10)
@@ -53,13 +55,13 @@ async function exportToExcel(cls, history) {
 }
 
 export default function TeacherAttendance({ user, dataVersion }) {
+  const { classes, loading } = useTeacherClasses(user)
+
   const [view, setView]                   = useState('classes')
-  const [classes, setClasses]             = useState([])
   const [selectedClass, setSelectedClass] = useState(null)
   const [selectedDate, setSelectedDate]   = useState(today())
   const [records, setRecords]             = useState({})
   const [history, setHistory]             = useState([])
-  const [loading, setLoading]             = useState(true)
   const [saving, setSaving]               = useState(false)
   const [saved, setSaved]                 = useState(false)
   const [showScanner, setShowScanner]     = useState(false)
@@ -67,14 +69,6 @@ export default function TeacherAttendance({ user, dataVersion }) {
   const [search, setSearch]               = useState('')
   const [exporting, setExporting]         = useState(false)
   const [confirmAbsent, setConfirmAbsent] = useState(null)
-
-  useEffect(() => {
-    getClasses().then(list => {
-      const mine = (list || []).filter(c => c.teacherNpub === user.npub)
-      setClasses(mine.sort((a, b) => a.createdAt - b.createdAt))
-      setLoading(false)
-    })
-  }, [dataVersion])
 
   useEffect(() => {
     if (!selectedClass) return
@@ -137,16 +131,11 @@ export default function TeacherAttendance({ user, dataVersion }) {
       setScanResult({ unknown: true, npub })
       return
     }
-
-    // Build updated records immediately — can't rely on state update being sync
     const updatedRecords = { ...records, [npub]: 'present' }
     setRecords(updatedRecords)
     setShowScanner(false)
     setScanResult({ student, profile: null, className: selectedClass.name })
 
-    // ── Auto-save + publish immediately on every scan ─────────────
-    // Teacher might close app or forget to hit Save — every scan is
-    // instantly committed to IndexedDB and pushed to Nostr.
     const attendanceRecord = {
       classId:     selectedClass.id,
       className:   selectedClass.name,
@@ -159,7 +148,6 @@ export default function TeacherAttendance({ user, dataVersion }) {
     saveAttendance(attendanceRecord).catch(console.warn)
     publishAttendance(user.nsec, attendanceRecord).catch(console.warn)
 
-    // Fetch kind:0 profile in background — update popup when it arrives
     try {
       const { SimplePool } = await import('nostr-tools/pool')
       const { nip19 }      = await import('nostr-tools')
@@ -342,28 +330,23 @@ export default function TeacherAttendance({ user, dataVersion }) {
             <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={() => setConfirmAbsent(null)} style={S.modalSecBtn}>Keep Present</button>
               <button onClick={async () => {
-                  // Update local state
-                  const updatedRecords = { ...records, [confirmAbsent.npub]: 'absent' }
-                  setRecords(updatedRecords)
-                  setConfirmAbsent(null)
-
-                  // Immediately save + publish so student & admin see the change
-                  setSaving(true)
-                  const attendanceRecord = {
-                    classId:     selectedClass.id,
-                    className:   selectedClass.name,
-                    date:        selectedDate,
-                    teacherNpub: user.npub,
-                    records:     selectedClass.students?.map(s => ({
-                      npub: s.npub, name: s.name, status: updatedRecords[s.npub] || 'absent',
-                    })) || [],
-                  }
-                  await saveAttendance(attendanceRecord)
-                  publishAttendance(user.nsec, attendanceRecord).catch(console.warn)
-                  setSaving(false)
-                  setSaved(true)
-                  setTimeout(() => setSaved(false), 2500)
-                }} style={S.modalDangerBtn}>Mark Absent</button>
+                const updatedRecords = { ...records, [confirmAbsent.npub]: 'absent' }
+                setRecords(updatedRecords)
+                setConfirmAbsent(null)
+                setSaving(true)
+                const attendanceRecord = {
+                  classId:     selectedClass.id,
+                  className:   selectedClass.name,
+                  date:        selectedDate,
+                  teacherNpub: user.npub,
+                  records:     selectedClass.students?.map(s => ({
+                    npub: s.npub, name: s.name, status: updatedRecords[s.npub] || 'absent',
+                  })) || [],
+                }
+                await saveAttendance(attendanceRecord)
+                publishAttendance(user.nsec, attendanceRecord).catch(console.warn)
+                setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500)
+              }} style={S.modalDangerBtn}>Mark Absent</button>
             </div>
           </div>
         </div>
@@ -465,24 +448,24 @@ export default function TeacherAttendance({ user, dataVersion }) {
 }
 
 const S = {
-  page:         { minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-display)', paddingBottom: 100 },
-  header:       { background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  title:        { fontSize: 18, fontWeight: 800, color: 'var(--text)' },
-  sub:          { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
-  backBtn:      { display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', color: 'var(--muted)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-display)', padding: 0 },
-  iconBtn:      { width: 36, height: 36, borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' },
-  classCard:    { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', width: '100%', fontFamily: 'var(--font-display)' },
-  classBadge:   { width: 44, height: 44, borderRadius: 12, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, flexShrink: 0 },
-  className:    { fontSize: 14, fontWeight: 800, color: 'var(--text)' },
-  classSub:     { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
-  searchInput:  { width: '100%', padding: '10px 14px', background: 'var(--surface)', border: '1.5px solid var(--border)', borderRadius: 12, fontSize: 13, color: 'var(--text)', fontFamily: 'var(--font-display)', outline: 'none', boxSizing: 'border-box' },
-  center:       { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 60 },
-  empty:        { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '60px 20px', color: 'var(--muted)' },
-  emptyTitle:   { fontSize: 16, fontWeight: 800, color: 'var(--text)' },
-  emptySub:     { fontSize: 13, textAlign: 'center', lineHeight: 1.6, maxWidth: 280 },
-  modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  modal:        { background: 'var(--surface)', borderRadius: 24, padding: '28px 24px', width: '100%', maxWidth: 340, textAlign: 'center', boxShadow: '0 24px 64px rgba(0,0,0,0.5)' },
-  modalSecBtn:  { flex: 1, padding: 13, background: 'transparent', border: '1.5px solid var(--border)', borderRadius: 12, color: 'var(--text)', fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
+  page:           { minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-display)', paddingBottom: 100 },
+  header:         { background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  title:          { fontSize: 18, fontWeight: 800, color: 'var(--text)' },
+  sub:            { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
+  backBtn:        { display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', color: 'var(--muted)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-display)', padding: 0 },
+  iconBtn:        { width: 36, height: 36, borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' },
+  classCard:      { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', width: '100%', fontFamily: 'var(--font-display)' },
+  classBadge:     { width: 44, height: 44, borderRadius: 12, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, flexShrink: 0 },
+  className:      { fontSize: 14, fontWeight: 800, color: 'var(--text)' },
+  classSub:       { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
+  searchInput:    { width: '100%', padding: '10px 14px', background: 'var(--surface)', border: '1.5px solid var(--border)', borderRadius: 12, fontSize: 13, color: 'var(--text)', fontFamily: 'var(--font-display)', outline: 'none', boxSizing: 'border-box' },
+  center:         { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 60 },
+  empty:          { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '60px 20px', color: 'var(--muted)' },
+  emptyTitle:     { fontSize: 16, fontWeight: 800, color: 'var(--text)' },
+  emptySub:       { fontSize: 13, textAlign: 'center', lineHeight: 1.6, maxWidth: 280 },
+  modalOverlay:   { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  modal:          { background: 'var(--surface)', borderRadius: 24, padding: '28px 24px', width: '100%', maxWidth: 340, textAlign: 'center', boxShadow: '0 24px 64px rgba(0,0,0,0.5)' },
+  modalSecBtn:    { flex: 1, padding: 13, background: 'transparent', border: '1.5px solid var(--border)', borderRadius: 12, color: 'var(--text)', fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
   modalDangerBtn: { flex: 1, padding: 13, background: 'rgba(239,68,68,0.12)', border: '1.5px solid rgba(239,68,68,0.35)', borderRadius: 12, color: '#ef4444', fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 800, cursor: 'pointer' },
 }
 

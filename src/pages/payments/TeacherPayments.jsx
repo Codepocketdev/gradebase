@@ -6,9 +6,10 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import { ArrowLeft, ChevronRight, Search, Loader, Award, Check } from 'lucide-react'
-import { getClasses, getPayments, getAllFeeStructures, getSchool, savePayment, saveFeeStructure } from '../../db'
+import { getPayments, getAllFeeStructures, getSchool, savePayment, saveFeeStructure } from '../../db'
 import { computeStudentBalance } from '../../computeBalance'
 import { fetchAllFeeStructures, fetchPaymentEntries } from '../../nostrSync'
+import { useTeacherClasses } from '../../hooks/useTeacherClasses'
 
 const CURRENT_YEAR = new Date().getFullYear()
 const TERMS = [
@@ -21,8 +22,9 @@ const fmt = (n) => `KSh ${Number(n||0).toLocaleString()}`
 
 
 export default function TeacherPayments({ user, dataVersion }) {
+  const { classes: myClasses } = useTeacherClasses(user)
+
   const [view, setView]             = useState('overview')
-  const [myClasses, setMyClasses]   = useState([])
   const [selectedClass, setSelectedClass]     = useState(null)
   const [selectedStudent, setSelectedStudent] = useState(null)
   const [payments, setPayments]     = useState([])
@@ -43,12 +45,10 @@ export default function TeacherPayments({ user, dataVersion }) {
     const load = async () => {
       // ── Step 1: render from IndexedDB immediately ─────────────────
       setLoading(true)
-      const [classes, localPmts, localFees] = await Promise.all([
-        getClasses(), getPayments(), getAllFeeStructures()
+      const [localPmts, localFees] = await Promise.all([
+        getPayments(), getAllFeeStructures()
       ])
-      const mine = (classes||[]).filter(c => c.teacherNpub === user.npub)
       if (mountedRef.current) {
-        setMyClasses(mine)
         setPayments(localPmts||[])
         setFeeStructures(localFees||[])
         setLoading(false)

@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
 import { Plus, Users, ChevronRight, Search, School, X, UserPlus, ArrowLeft, Loader } from 'lucide-react'
-import { replaceAllClasses } from '../db'
-import { syncSaveClass } from '../nostrSync'
-import { useTeacherClasses } from '../hooks/useTeacherClasses'
+import { getClasses, replaceAllClasses } from '../db'
+import { syncSaveClass, fetchAndSeed } from '../nostrSync'
 import StudentModal from './StudentModal'
 
 const GRAD = [
@@ -18,25 +17,9 @@ const GRAD = [
 ]
 
 export default function Students({ user, userRole, dataVersion }) {
-  const { classes, loading } = useTeacherClasses(userRole === 'teacher' ? user : null)
-
-  // Admin still reads from IndexedDB directly (no live sub needed, AppRoot handles it)
-  const [adminClasses, setAdminClasses] = useState([])
-  const [adminLoading, setAdminLoading] = useState(userRole === 'admin')
-
-  useEffect(() => {
-    if (userRole !== 'admin') return
-    import('../db').then(({ getClasses }) =>
-      getClasses().then(list => {
-        setAdminClasses((list || []).sort((a, b) => a.createdAt - b.createdAt))
-        setAdminLoading(false)
-      })
-    )
-  }, [dataVersion, userRole])
-
-  const allClasses  = userRole === 'teacher' ? classes : adminClasses
-  const isLoading   = userRole === 'teacher' ? loading : adminLoading
-
+  const [classes, setClasses]               = useState([])
+  const [loading, setLoading]               = useState(true)
+  const [syncing, setSyncing]               = useState(false)
   const [saving, setSaving]                 = useState(false)
   const [selectedClass, setSelectedClass]   = useState(null)
   const [search, setSearch]                 = useState('')
@@ -44,16 +27,59 @@ export default function Students({ user, userRole, dataVersion }) {
   const [selectedStudent, setSelectedStudent] = useState(null)
   const [newStudentName, setNewStudentName] = useState('')
   const [msg, setMsg]                       = useState('')
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   const canAdd    = userRole === 'admin' || userRole === 'teacher'
   const canDelete = userRole === 'admin' || userRole === 'teacher'
 
-  // Keep selectedClass in sync when classes update
+  // ── Step 1: render from IndexedDB immediately ─────────────────────
+  // ── Step 2: if empty + teacher → BG fetch from Nostr ─────────────
   useEffect(() => {
-    if (!selectedClass) return
-    const updated = allClasses.find(c => c.id === selectedClass.id)
-    if (updated) setSelectedClass(updated)
-  }, [allClasses])
+    const load = async () => {
+      const list = await getClasses()
+      const sorted = (list || []).sort((a, b) => a.createdAt - b.createdAt)
+
+      if (!mountedRef.current) return
+      setClasses(sorted)
+      setLoading(false)
+
+      // Keep selectedClass in sync with fresh data
+      if (selectedClass) {
+        const updated = sorted.find(c => c.id === selectedClass.id)
+        if (updated) setSelectedClass(updated)
+      }
+
+      // BG sync — only needed for teachers (admin always has data via AppRoot)
+      if (userRole === 'teacher' && sorted.length === 0) {
+        const meta = (() => {
+          try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
+        })()
+        if (!meta.adminNpub) return
+
+        setSyncing(true)
+        try {
+          const result = await fetchAndSeed({
+            role:      'teacher',
+            userNsec:  user.nsec,
+            userPk:    user.pk,
+            adminNpub: meta.adminNpub,
+          })
+          if (result?.found && mountedRef.current) {
+            const fresh = await getClasses()
+            const freshSorted = (fresh || []).sort((a, b) => a.createdAt - b.createdAt)
+            setClasses(freshSorted)
+          }
+        } catch (e) { console.warn('[Students] BG sync error:', e) }
+        if (mountedRef.current) setSyncing(false)
+      }
+    }
+    load()
+  }, [dataVersion, userRole])
 
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 3000) }
 
@@ -66,15 +92,22 @@ export default function Students({ user, userRole, dataVersion }) {
     const nsec    = nip19.nsecEncode(sk)
     const grad    = GRAD[selectedClass.students.length % GRAD.length]
     const student = {
-      id: Date.now().toString(), name: newStudentName.trim(),
+      id:        Date.now().toString(),
+      name:      newStudentName.trim(),
       pk, npub, nsec, grad,
-      classId: selectedClass.id, className: selectedClass.name, createdAt: Date.now(),
+      classId:   selectedClass.id,
+      className: selectedClass.name,
+      createdAt: Date.now(),
     }
     const updatedClass   = { ...selectedClass, students: [...selectedClass.students, student] }
-    const updatedClasses = allClasses.map(c => c.id === selectedClass.id ? updatedClass : c)
+    const updatedClasses = classes.map(c => c.id === selectedClass.id ? updatedClass : c)
+
     await replaceAllClasses(updatedClasses)
+    setClasses(updatedClasses)
     setSelectedClass(updatedClass)
-    setNewStudentName(''); setShowAddStudent(false)
+    setNewStudentName('')
+    setShowAddStudent(false)
+
     syncSaveClass(user.nsec, updatedClass)
       .then(() => showMsg('ok: Student published to Nostr'))
       .catch(() => showMsg('ok: Saved locally'))
@@ -84,10 +117,13 @@ export default function Students({ user, userRole, dataVersion }) {
   const deleteStudent = async (studentId) => {
     setSaving(true)
     const updatedClass   = { ...selectedClass, students: selectedClass.students.filter(s => s.id !== studentId) }
-    const updatedClasses = allClasses.map(c => c.id === selectedClass.id ? updatedClass : c)
+    const updatedClasses = classes.map(c => c.id === selectedClass.id ? updatedClass : c)
+
     await replaceAllClasses(updatedClasses)
+    setClasses(updatedClasses)
     setSelectedClass(updatedClass)
     setSelectedStudent(null)
+
     syncSaveClass(user.nsec, updatedClass).catch(console.warn)
     setSaving(false)
   }
@@ -99,6 +135,7 @@ export default function Students({ user, userRole, dataVersion }) {
   return (
     <div style={S.page}>
 
+      {/* Header */}
       <div style={S.header}>
         {selectedClass ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -110,7 +147,14 @@ export default function Students({ user, userRole, dataVersion }) {
             <span style={S.title}>{selectedClass.name}</span>
           </div>
         ) : (
-          <div style={S.title}>Students</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={S.title}>Students</div>
+            {syncing && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--accent)', fontWeight: 700 }}>
+                <Loader size={11} style={{ animation: 'spin 1s linear infinite' }} /> Syncing
+              </div>
+            )}
+          </div>
         )}
         {canAdd && selectedClass && (
           <button style={S.addBtn} onClick={() => setShowAddStudent(true)}>
@@ -119,12 +163,14 @@ export default function Students({ user, userRole, dataVersion }) {
         )}
       </div>
 
+      {/* Status msg */}
       {msg && (
         <div style={{ margin: '0 20px', padding: '10px 14px', borderRadius: 10, background: msg.startsWith('ok') ? 'rgba(0,201,122,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${msg.startsWith('ok') ? 'rgba(0,201,122,0.3)' : 'rgba(239,68,68,0.3)'}`, fontSize: 12, color: msg.startsWith('ok') ? '#00c97a' : '#ef4444', fontWeight: 600 }}>
           {msg.replace(/^(ok|err): /, '')}
         </div>
       )}
 
+      {/* Search */}
       <div style={S.searchWrap}>
         <Search size={15} style={S.searchIcon} />
         <input style={S.searchInput}
@@ -132,27 +178,34 @@ export default function Students({ user, userRole, dataVersion }) {
           value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
-      {isLoading && (
+      {/* Loading */}
+      {loading && (
         <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} /> Loading…
         </div>
       )}
 
-      {!isLoading && !selectedClass && (
+      {/* ── Class List ── */}
+      {!loading && !selectedClass && (
         <div style={S.section}>
           <div style={S.sectionHeader}>
             <div style={S.sectionLabel}>All Classes</div>
-            <div style={S.sectionCount}>{allClasses.length} classes · {allClasses.flatMap(c => c.students || []).length} students</div>
+            <div style={S.sectionCount}>{classes.length} classes · {classes.flatMap(c => c.students || []).length} students</div>
           </div>
-          {allClasses.length === 0 ? (
+
+          {classes.length === 0 ? (
             <div style={S.empty}>
               <School size={48} strokeWidth={1} color="var(--muted)" />
-              <div style={S.emptyTitle}>No classes yet</div>
-              <div style={S.emptySub}>Go to More → Classes to create your first class.</div>
+              <div style={S.emptyTitle}>{syncing ? 'Fetching classes…' : 'No classes yet'}</div>
+              <div style={S.emptySub}>
+                {syncing
+                  ? 'Pulling your classes from Nostr, hang tight.'
+                  : 'Go to More → Classes to create your first class.'}
+              </div>
             </div>
           ) : (
             <div style={S.list}>
-              {allClasses.filter(c => c.name.toLowerCase().includes(search.toLowerCase())).map(cls => (
+              {classes.filter(c => c.name.toLowerCase().includes(search.toLowerCase())).map(cls => (
                 <div key={cls.id} style={S.classCard} onClick={() => { setSelectedClass(cls); setSearch('') }}>
                   <div style={{ ...S.classBadge, background: cls.color?.bg || '#f0fdf4', color: cls.color?.color || '#00c97a', border: `1px solid ${cls.color?.border || '#bbf7d0'}` }}>
                     {cls.name.slice(0, 3).toUpperCase()}
@@ -169,16 +222,20 @@ export default function Students({ user, userRole, dataVersion }) {
         </div>
       )}
 
-      {!isLoading && selectedClass && (
+      {/* ── Student List ── */}
+      {!loading && selectedClass && (
         <div style={S.section}>
           <div style={S.sectionHeader}>
             <div style={S.sectionLabel}>{students.length} student{students.length !== 1 ? 's' : ''}</div>
           </div>
+
           {students.length === 0 ? (
             <div style={S.empty}>
               <Users size={48} strokeWidth={1} color="var(--muted)" />
               <div style={S.emptyTitle}>No students yet</div>
-              <div style={S.emptySub}>{canAdd ? 'Tap + Add Student to register a student.' : 'No students in this class yet.'}</div>
+              <div style={S.emptySub}>
+                {canAdd ? 'Tap + Add Student to register a student.' : 'No students in this class yet.'}
+              </div>
             </div>
           ) : (
             <div style={S.list}>
@@ -197,6 +254,7 @@ export default function Students({ user, userRole, dataVersion }) {
         </div>
       )}
 
+      {/* ── Add Student Sheet ── */}
       {showAddStudent && (
         <div style={S.overlay} onClick={e => e.target === e.currentTarget && setShowAddStudent(false)}>
           <div style={S.sheet}>
@@ -211,13 +269,17 @@ export default function Students({ user, userRole, dataVersion }) {
               onKeyDown={e => e.key === 'Enter' && addStudent()} autoFocus />
             <button style={{ ...S.primaryBtn, marginTop: 8, opacity: saving ? 0.7 : 1 }}
               onClick={addStudent} disabled={saving}>
-              {saving ? <><Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</> : <><UserPlus size={16} /> Register Student</>}
+              {saving
+                ? <><Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</>
+                : <><UserPlus size={16} /> Register Student</>
+              }
             </button>
             <button style={S.secondaryBtn} onClick={() => { setShowAddStudent(false); setNewStudentName('') }}>Cancel</button>
           </div>
         </div>
       )}
 
+      {/* ── Student Modal ── */}
       {selectedStudent && (
         <StudentModal
           student={selectedStudent}
