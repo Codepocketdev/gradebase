@@ -66,7 +66,7 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
   const renderPage = () => {
     switch (page) {
       case 'home':
-        return <HomePg user={user} schoolName={schoolName} stats={stats} fmt={fmt} />
+        return <HomePg user={user} userRole={userRole} schoolName={schoolName} onNavigate={navigate} dataVersion={dataVersion} />
 
       case 'students':
         return userRole === 'student'
