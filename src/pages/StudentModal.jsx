@@ -3,7 +3,7 @@ import { nip19 } from 'nostr-tools'
 import { useNostrProfile } from '../hooks/useNostrProfile'
 import {
   X, Copy, CheckCircle, Eye, EyeOff,
-  Shield, QrCode, User, Trash2, AlertTriangle
+  Shield, QrCode, User, Trash2, AlertTriangle, UtensilsCrossed
 } from 'lucide-react'
 
 function QRCode({ value, size = 200 }) {
@@ -18,19 +18,20 @@ function QRCode({ value, size = 200 }) {
 
 const short = (str, a = 10, b = 6) => str ? `${str.slice(0, a)}…${str.slice(-b)}` : ''
 
+const LUNCH_LABELS = { monthly: 'Monthly', weekly: 'Weekly', daily: 'Daily', home: 'Home Lunch' }
+
 export default function StudentModal({ student, userRole, onClose, onDelete }) {
-  // Decode npub → hex pk for the profile hook (same hook StudentProfile uses)
   const studentPk = useMemo(() => {
     try { return nip19.decode(student.npub).data } catch { return null }
   }, [student.npub])
 
   const { profile: nostrProfile, loading: loadingProfile } = useNostrProfile(studentPk)
 
-  const [tab, setTab]                       = useState('profile')
-  const [nsecVisible, setNsecVisible]       = useState(false)
-  const [copied, setCopied]                 = useState('')
+  const [tab, setTab]                             = useState('profile')
+  const [nsecVisible, setNsecVisible]             = useState(false)
+  const [copied, setCopied]                       = useState('')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const [imgFailed, setImgFailed]           = useState(false)
+  const [imgFailed, setImgFailed]                 = useState(false)
 
   const isStudent = userRole === 'student'
   const isAdmin   = userRole === 'admin'
@@ -50,7 +51,6 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
   const displayName = nostrProfile?.name || nostrProfile?.display_name || student.name
   const avatarSrc   = (!imgFailed && nostrProfile?.picture) || null
 
-  // ── Delete confirm screen ───────────────────────────────────────────────────
   if (showDeleteConfirm) return (
     <div style={S.overlay} onClick={e => e.target === e.currentTarget && setShowDeleteConfirm(false)}>
       <div style={{ ...S.sheet, padding: '32px 20px 44px' }}>
@@ -77,10 +77,8 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
     <div style={S.overlay} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={S.sheet}>
 
-        {/* Close button */}
         <button onClick={onClose} style={S.closeBtn}><X size={15} /></button>
 
-        {/* Tabs */}
         <div style={{ display: 'flex', gap: 6, marginBottom: 22 }}>
           {tabs.map(({ id, label, Icon }) => (
             <button key={id} onClick={() => setTab(id)} style={{
@@ -100,7 +98,6 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
         {/* ── PROFILE TAB ── */}
         {tab === 'profile' && (
           <>
-            {/* Avatar + name row */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
               <div style={{
                 width: 68, height: 68, borderRadius: '50%',
@@ -129,7 +126,6 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
               </div>
             </div>
 
-            {/* Bio if available */}
             {nostrProfile?.about && (
               <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7, padding: '10px 13px', background: 'var(--bg)', borderRadius: 10, border: '1px solid var(--border)', marginBottom: 12 }}>
                 {nostrProfile.about}
@@ -147,8 +143,19 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
               </div>
             </div>
 
+            {/* Lunch info — visible to teacher and admin */}
+            {(isAdmin || isTeacher) && (
+              <div style={{ ...S.infoRow, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <UtensilsCrossed size={14} color="var(--muted)" />
+                  <div style={{ fontSize: 13, color: 'var(--muted)' }}>Lunch Plan</div>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
+                  {LUNCH_LABELS[student.lunchType] || 'Monthly'}
+                </div>
+              </div>
+            )}
 
-            {/* Remove student — admin and teacher */}
             {onDelete && (
               <button onClick={() => setShowDeleteConfirm(true)}
                 style={{ ...S.btn, background: '#fef2f2', color: '#ef4444', border: '1.5px solid #fecaca', marginTop: 8 }}>
@@ -192,7 +199,6 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
               </div>
             )}
 
-            {/* Public key */}
             <div style={{ ...S.keySection, marginBottom: 10 }}>
               <div style={{ ...S.keyLabel, color: '#00c97a' }}>PUBLIC KEY — safe to share</div>
               <div style={{ ...S.mono, fontSize: 11, wordBreak: 'break-all', lineHeight: 1.7 }}>{student.npub}</div>
@@ -202,7 +208,6 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
               </button>
             </div>
 
-            {/* Private key */}
             <div style={{ ...S.keySection, border: '1.5px solid #fecaca', background: 'rgba(239,68,68,0.05)', marginBottom: 10 }}>
               <div style={{ ...S.keyLabel, color: '#ef4444' }}>
                 {isStudent ? 'PRIVATE KEY — NEVER share with anyone!' : 'PRIVATE KEY — share only with this student'}
@@ -254,49 +259,16 @@ export default function StudentModal({ student, userRole, onClose, onDelete }) {
 }
 
 const S = {
-  overlay: {
-    position: 'fixed', top: 0, left: 0, right: 0, bottom: 64,
-    background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
-    zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-  },
-  sheet: {
-    width: '100%', maxWidth: 480,
-    background: 'var(--surface)', borderRadius: '20px 20px 0 0',
-    padding: '24px 20px 32px', position: 'relative',
-    boxShadow: '0 -8px 40px rgba(0,0,0,0.15)',
-    maxHeight: '100%', overflowY: 'auto',
-  },
-  closeBtn: {
-    position: 'absolute', top: 18, right: 18,
-    background: 'var(--surface2)', border: 'none',
-    width: 32, height: 32, borderRadius: '50%',
-    display: 'grid', placeItems: 'center',
-    cursor: 'pointer', color: 'var(--muted)',
-  },
-  infoRow: {
-    background: 'var(--bg)', border: '1px solid var(--border)',
-    borderRadius: 11, padding: '11px 13px', marginBottom: 8,
-  },
-  infoLabel: {
-    fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-    letterSpacing: 0.8, color: 'var(--muted)', marginBottom: 5,
-  },
-  mono: { fontFamily: 'var(--font-mono, monospace)', fontSize: 12, color: 'var(--text)' },
-  iconBtn: { background: 'none', border: 'none', cursor: 'pointer', padding: 4, flexShrink: 0, display: 'flex', alignItems: 'center' },
-  btn: {
-    width: '100%', padding: 13, borderRadius: 12, border: 'none',
-    fontSize: 14, fontWeight: 700, cursor: 'pointer',
-    fontFamily: 'var(--font-display)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-  },
+  overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 64, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' },
+  sheet:   { width: '100%', maxWidth: 480, background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px 32px', position: 'relative', boxShadow: '0 -8px 40px rgba(0,0,0,0.15)', maxHeight: '100%', overflowY: 'auto' },
+  closeBtn: { position: 'absolute', top: 18, right: 18, background: 'var(--surface2)', border: 'none', width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--muted)' },
+  infoRow:  { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 11, padding: '11px 13px', marginBottom: 8 },
+  infoLabel: { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, color: 'var(--muted)', marginBottom: 5 },
+  mono:     { fontFamily: 'var(--font-mono, monospace)', fontSize: 12, color: 'var(--text)' },
+  iconBtn:  { background: 'none', border: 'none', cursor: 'pointer', padding: 4, flexShrink: 0, display: 'flex', alignItems: 'center' },
+  btn:      { width: '100%', padding: 13, borderRadius: 12, border: 'none', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 },
   keySection: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 14 },
   keyLabel:   { fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 },
-  copyBtn: {
-    display: 'inline-flex', alignItems: 'center', gap: 6,
-    marginTop: 10, background: 'transparent',
-    border: '1.5px solid var(--border)', color: 'var(--muted)',
-    padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-    cursor: 'pointer', fontFamily: 'var(--font-display)',
-  },
+  copyBtn:  { display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, background: 'transparent', border: '1.5px solid var(--border)', color: 'var(--muted)', padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-display)' },
 }
 

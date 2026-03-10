@@ -37,14 +37,12 @@ function AdminHome({ user, schoolName, onNavigate, dataVersion }) {
         return cls ? computeStudentBalance(s.npub, s.lunchType, termPayments, activeFees, cls.id).fullyPaid : false
       }).length
 
-      // Total expected = sum of each student's total fees
       const totalExpected = allStudents.reduce((sum, s) => {
         const cls = (classes || []).find(c => c.students?.some(st => st.npub === s.npub))
         if (!cls) return sum
         return sum + computeStudentBalance(s.npub, s.lunchType, termPayments, activeFees, cls.id).total
       }, 0)
 
-      // Teacher count from school record or unique teacherNpubs in classes
       const teacherNpubs = [...new Set((classes || []).map(c => c.teacherNpub).filter(Boolean))]
 
       setStats({
@@ -75,14 +73,12 @@ function AdminHome({ user, schoolName, onNavigate, dataVersion }) {
     <div style={S.page}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
-      {/* Hero */}
       <div style={S.hero}>
         <div style={S.heroIcon}><School size={28} color="var(--accent)" strokeWidth={1.5} /></div>
         <div style={S.heroName}>Welcome back, {name}</div>
         <div style={S.heroSub}>{stats.schoolName}</div>
       </div>
 
-      {/* Key stats row */}
       <div style={S.section}>
         <div style={S.grid3}>
           {[
@@ -101,7 +97,6 @@ function AdminHome({ user, schoolName, onNavigate, dataVersion }) {
         </div>
       </div>
 
-      {/* Fee collection */}
       <div style={S.section}>
         <div style={S.sectionLabel}>Term 1 · {CURRENT_YEAR} Collection</div>
         <div style={S.card}>
@@ -133,7 +128,6 @@ function AdminHome({ user, schoolName, onNavigate, dataVersion }) {
         </div>
       </div>
 
-      {/* Recent payments */}
       {stats.recentPayments.length > 0 && (
         <div style={S.section}>
           <div style={S.sectionLabel}>Recent Payments</div>
@@ -151,7 +145,6 @@ function AdminHome({ user, schoolName, onNavigate, dataVersion }) {
         </div>
       )}
 
-      {/* Quick links */}
       <div style={S.section}>
         <div style={S.sectionLabel}>Quick Access</div>
         {[
@@ -186,7 +179,6 @@ function TeacherHome({ user, onNavigate, dataVersion }) {
       const mine    = (classes || []).filter(c => c.teacherNpub === user.npub)
       const students = mine.flatMap(c => c.students || [])
 
-      // Today's attendance across all classes
       let presentToday = 0, totalToday = 0
       for (const cls of mine) {
         const { getAttendance } = await import('../db')
@@ -217,14 +209,12 @@ function TeacherHome({ user, onNavigate, dataVersion }) {
     <div style={S.page}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
-      {/* Hero */}
       <div style={S.hero}>
         <div style={S.heroIcon}><GraduationCap size={28} color="var(--accent)" strokeWidth={1.5} /></div>
         <div style={S.heroName}>Good day, {name}</div>
         <div style={S.heroSub}>{data.classes.length} class{data.classes.length !== 1 ? 'es' : ''} · {data.students.length} students</div>
       </div>
 
-      {/* Today's attendance */}
       <div style={S.section}>
         <div style={S.sectionLabel}>Today's Attendance</div>
         <div style={S.card}>
@@ -258,7 +248,6 @@ function TeacherHome({ user, onNavigate, dataVersion }) {
         </div>
       </div>
 
-      {/* My classes */}
       {data.classes.length > 0 && (
         <div style={S.section}>
           <div style={S.sectionLabel}>My Classes</div>
@@ -277,7 +266,6 @@ function TeacherHome({ user, onNavigate, dataVersion }) {
         </div>
       )}
 
-      {/* Quick links */}
       <div style={S.section}>
         <div style={S.sectionLabel}>Quick Access</div>
         {[
@@ -312,21 +300,18 @@ function StudentHome({ user, onNavigate, dataVersion }) {
         getClasses(), getPayments(), getAllFeeStructures(), getSchool()
       ])
 
-      // Find which class this student is in
       let myClass = null, myRecord = null
       for (const cls of (classes || [])) {
         const found = cls.students?.find(s => s.npub === user.npub)
         if (found) { myClass = cls; myRecord = found; break }
       }
 
-      // Balance
       const termPayments = (payments || []).filter(p => p.term === CURRENT_TERM && p.year === CURRENT_YEAR)
       const activeFees   = (feeStructures || []).find(f => f.year === CURRENT_YEAR && f.term === CURRENT_TERM)
       const bal = myClass
         ? computeStudentBalance(user.npub, myRecord?.lunchType, termPayments, activeFees, myClass.id)
         : null
 
-      // Attendance rate for this student
       let attended = 0, total = 0
       if (myClass) {
         const history = await getAttendanceByClass(myClass.id)
@@ -337,11 +322,7 @@ function StudentHome({ user, onNavigate, dataVersion }) {
       }
 
       setData({
-        myClass,
-        myRecord,
-        bal,
-        attended,
-        total,
+        myClass, myRecord, bal, attended, total,
         attendancePct: total > 0 ? Math.round((attended / total) * 100) : null,
         schoolName: school?.schoolName || '',
         lunchType: myRecord?.lunchType || 'monthly',
@@ -365,14 +346,12 @@ function StudentHome({ user, onNavigate, dataVersion }) {
     <div style={S.page}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
-      {/* Hero */}
       <div style={S.hero}>
         <div style={S.heroIcon}><BookOpen size={28} color="var(--accent)" strokeWidth={1.5} /></div>
-        <div style={S.heroName}>Hi, {name} 👋</div>
+        <div style={S.heroName}>Hi, {name}</div>
         <div style={S.heroSub}>{data.myClass?.name || '—'}{data.schoolName ? ` · ${data.schoolName}` : ''}</div>
       </div>
 
-      {/* Balance card */}
       {data.bal && (
         <div style={S.section}>
           <div style={S.sectionLabel}>Term 1 · {CURRENT_YEAR} Fees</div>
@@ -381,7 +360,7 @@ function StudentHome({ user, onNavigate, dataVersion }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Award size={28} color="#fbbf24" />
                 <div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#22c55e' }}>Fully Paid ✓</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#22c55e' }}>Fully Paid</div>
                   <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>All fees cleared for this term</div>
                 </div>
               </div>
@@ -409,7 +388,6 @@ function StudentHome({ user, onNavigate, dataVersion }) {
         </div>
       )}
 
-      {/* Attendance */}
       <div style={S.section}>
         <div style={S.sectionLabel}>My Attendance</div>
         <div style={S.card}>
@@ -431,7 +409,6 @@ function StudentHome({ user, onNavigate, dataVersion }) {
         </div>
       </div>
 
-      {/* Lunch + quick links */}
       <div style={S.section}>
         <div style={S.sectionLabel}>My Info</div>
         <div style={S.card}>
@@ -468,22 +445,22 @@ export default function Home({ user, userRole, schoolName, onNavigate, dataVersi
 
 // ── SHARED STYLES ─────────────────────────────────────────────────
 const S = {
-  page:       { minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-display)', paddingBottom: 100 },
-  center:     { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' },
-  hero:       { display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '36px 24px 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', textAlign: 'center' },
-  heroIcon:   { width: 64, height: 64, borderRadius: 18, background: 'var(--bg)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', marginBottom: 14 },
-  heroName:   { fontSize: 22, fontWeight: 800, color: 'var(--text)' },
-  heroSub:    { fontSize: 13, color: 'var(--muted)', marginTop: 4 },
-  section:    { padding: '16px 20px 0' },
+  page:         { minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-display)', paddingBottom: 100 },
+  center:       { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' },
+  hero:         { display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '36px 24px 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', textAlign: 'center' },
+  heroIcon:     { width: 64, height: 64, borderRadius: 18, background: 'var(--bg)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', marginBottom: 14 },
+  heroName:     { fontSize: 22, fontWeight: 800, color: 'var(--text)' },
+  heroSub:      { fontSize: 13, color: 'var(--muted)', marginTop: 4 },
+  section:      { padding: '16px 20px 0' },
   sectionLabel: { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--muted)', marginBottom: 10 },
-  card:       { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '16px' },
-  grid3:      { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 },
-  statCard:   { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '14px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 },
-  statIcon:   { width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center' },
-  statValue:  { fontSize: 22, fontWeight: 800, color: 'var(--text)' },
-  statLabel:  { fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.6 },
-  quickLink:  { width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', marginBottom: 8, fontFamily: 'var(--font-display)' },
-  quickIcon:  { width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', flexShrink: 0 },
-  accentBtn:  { width: '100%', padding: 14, background: 'var(--accent)', border: 'none', borderRadius: 12, color: '#0d1117', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  card:         { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '16px' },
+  grid3:        { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 },
+  statCard:     { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '14px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 },
+  statIcon:     { width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center' },
+  statValue:    { fontSize: 22, fontWeight: 800, color: 'var(--text)' },
+  statLabel:    { fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.6 },
+  quickLink:    { width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', marginBottom: 8, fontFamily: 'var(--font-display)' },
+  quickIcon:    { width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', flexShrink: 0 },
+  accentBtn:    { width: '100%', padding: 14, background: 'var(--accent)', border: 'none', borderRadius: 12, color: '#0d1117', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
 }
 
