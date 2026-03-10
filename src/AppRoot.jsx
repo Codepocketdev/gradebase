@@ -9,6 +9,7 @@ import {
 } from './db'
 import { startSync, stopSync, fetchAndSeed, fetchAndSeedAttendance, fetchAndSeedPayments } from './nostrSync'
 import { useTheme } from './hooks/useTheme'
+import InstallPrompt from './components/InstallPrompt'
 
 // ── Restoring screen shown while we re-seed from Nostr ────────────────
 function RestoringScreen() {
@@ -75,8 +76,6 @@ export default function AppRoot() {
               } catch (e) {
                 console.warn('[AppRoot] cold reseed failed:', e)
               }
-              // Seed fee structures + payment entries for all roles
-              // adminNpub may be the user's own pk (admin) or from meta (teacher/student)
               try {
                 const adminNpubForPayments = parsed.role === 'admin'
                   ? (await import('nostr-tools')).nip19.npubEncode(parsed.pk)
@@ -138,8 +137,6 @@ export default function AppRoot() {
           try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
         })()
 
-        // ── Reseed + attendance for every role on every boot ──────────
-        // This means a cache clear is self-healing — everything comes back
         const bootReseed = async () => {
           if (user.role === 'admin') {
             const result = await fetchAndSeed({
@@ -151,7 +148,6 @@ export default function AppRoot() {
               console.log('[AppRoot] admin boot resync done')
               setDataVersion(v => v + 1)
             }
-            // Attendance for all teachers
             try {
               const { nip19 } = await import('nostr-tools')
               const teachers   = await getTeachers()
@@ -163,7 +159,6 @@ export default function AppRoot() {
                 setDataVersion(v => v + 1)
               }
             } catch {}
-            // Fee structures + payment entries (admin is the publisher)
             try {
               const { nip19 } = await import('nostr-tools')
               const adminNpub = nip19.npubEncode(user.pk)
@@ -183,10 +178,8 @@ export default function AppRoot() {
               console.log('[AppRoot] teacher boot resync done')
               setDataVersion(v => v + 1)
             }
-            // Attendance for own classes
             await fetchAndSeedAttendance([user.pk])
             setDataVersion(v => v + 1)
-            // Fee structures + payment entries (admin publishes these)
             if (meta.adminNpub) {
               await fetchAndSeedPayments(meta.adminNpub)
               setDataVersion(v => v + 1)
@@ -206,7 +199,6 @@ export default function AppRoot() {
                 setDataVersion(v => v + 1)
               }
             }
-            // Attendance from student's teacher
             try {
               const { nip19 } = await import('nostr-tools')
               const classes    = await getClasses()
@@ -218,7 +210,6 @@ export default function AppRoot() {
                 setDataVersion(v => v + 1)
               }
             } catch {}
-            // Fee structures + payment entries (admin publishes these)
             try {
               const school = await getSchool()
               if (school?.adminNpub) {
@@ -232,11 +223,8 @@ export default function AppRoot() {
           }
         }
 
-        // Students: await reseed first so school.adminNpub is in DB before startSync
-        // Teacher/Admin: run in background, they already have adminPk
         if (user.role === 'student') {
           await bootReseed().catch(console.warn)
-          // Re-read adminPk now that school is seeded
           try {
             const school = await getSchool()
             if (school?.adminNpub) {
@@ -334,13 +322,16 @@ export default function AppRoot() {
   if (phase === 'auth')   return <Auth onAuth={handleAuth} />
 
   return (
-    <App
-      user={user}
-      syncState={syncState}
-      dataVersion={dataVersion}
-      onLogout={handleLogout}
-      onUpdateUser={handleUpdateUser}
-    />
+    <>
+      <App
+        user={user}
+        syncState={syncState}
+        dataVersion={dataVersion}
+        onLogout={handleLogout}
+        onUpdateUser={handleUpdateUser}
+      />
+      <InstallPrompt />
+    </>
   )
 }
 
