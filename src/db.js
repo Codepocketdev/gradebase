@@ -1,10 +1,10 @@
 /**
  * GradeBase IndexedDB Cache
- * v5: added PROFILES store (kind:0 cache per pubkey)
+ * v6: added LEDGER + BUDGETS stores
  */
 
 const DB_NAME    = 'gradebase'
-const DB_VERSION = 5
+const DB_VERSION = 6
 
 const STORES = {
   SCHOOL:     'school',
@@ -14,6 +14,8 @@ const STORES = {
   ATTENDANCE: 'attendance',
   FEES:       'fees',
   PROFILES:   'profiles',
+  LEDGER:     'ledger',
+  BUDGETS:    'budgets',
 }
 
 let _db = null
@@ -70,11 +72,23 @@ function openDB() {
         f.createIndex('term', 'term', { unique: false })
       }
 
-      // ── PROFILES (v5) ─────────────────────────────────────────────
-      // key: hex pubkey (pk)
-      // value: { pk, name, display_name, about, picture, createdAt }
       if (!db.objectStoreNames.contains(STORES.PROFILES)) {
         db.createObjectStore(STORES.PROFILES, { keyPath: 'pk' })
+      }
+
+      // ── LEDGER (v6) ───────────────────────────────────────────────
+      // key: id (timestamp number)
+      if (!db.objectStoreNames.contains(STORES.LEDGER)) {
+        const l = db.createObjectStore(STORES.LEDGER, { keyPath: 'id' })
+        l.createIndex('type',     'type',     { unique: false })
+        l.createIndex('category', 'category', { unique: false })
+        l.createIndex('date',     'date',     { unique: false })
+      }
+
+      // ── BUDGETS (v6) ──────────────────────────────────────────────
+      // key-value store: key = category name, value = { category, amount }
+      if (!db.objectStoreNames.contains(STORES.BUDGETS)) {
+        db.createObjectStore(STORES.BUDGETS, { keyPath: 'category' })
       }
     }
 
@@ -264,22 +278,60 @@ export async function getAttendanceByTeacher(teacherNpub) {
   return promisify(store.index('teacherNpub').getAll(teacherNpub))
 }
 
-// ── PROFILES (kind:0) ─────────────────────────────────────────────────
-// Stored by hex pubkey. Shape: { pk, name, display_name, about, picture, createdAt }
-
+// ── PROFILES ──────────────────────────────────────────────────────────
 export async function getProfile(pk) {
   const { store } = await tx(STORES.PROFILES)
   return promisify(store.get(pk))
 }
 
 export async function saveProfile(pk, content, createdAt) {
-  // Only overwrite if newer
   const existing = await getProfile(pk)
   if (existing && existing.createdAt >= createdAt) return existing
   const record = { pk, ...content, createdAt }
   const { store } = await tx(STORES.PROFILES, 'readwrite')
   await promisify(store.put(record))
   return record
+}
+
+// ── LEDGER ────────────────────────────────────────────────────────────
+export async function getLedgerTransactions() {
+  const { store } = await tx(STORES.LEDGER)
+  const all = await promisify(store.getAll())
+  return all.sort((a, b) => b.createdAt - a.createdAt)
+}
+
+export async function saveLedgerTransaction(txn) {
+  const { store } = await tx(STORES.LEDGER, 'readwrite')
+  return promisify(store.put(txn))
+}
+
+export async function deleteLedgerTransaction(id) {
+  const { store } = await tx(STORES.LEDGER, 'readwrite')
+  return promisify(store.delete(id))
+}
+
+export async function replaceAllLedgerTransactions(txns) {
+  const { store, transaction } = await tx(STORES.LEDGER, 'readwrite')
+  return new Promise((resolve, reject) => {
+    store.clear()
+    txns.forEach(t => store.put(t))
+    transaction.oncomplete = () => resolve()
+    transaction.onerror    = (e) => reject(e.target.error)
+  })
+}
+
+// ── BUDGETS ───────────────────────────────────────────────────────────
+export async function getBudgetsMap() {
+  const { store } = await tx(STORES.BUDGETS)
+  const all = await promisify(store.getAll())
+  const map = {}
+  all.forEach(b => { map[b.category] = b.amount })
+  return map
+}
+
+export async function saveBudget(category, amount) {
+  const { store } = await tx(STORES.BUDGETS, 'readwrite')
+  return promisify(store.put({ category, amount }))
 }
 
 // ── ROLE DETECTION ────────────────────────────────────────────────────

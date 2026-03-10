@@ -44,12 +44,16 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
 
   const { theme, toggleTheme }           = useTheme()
   const { fmt, rate, loading: rateLoad } = useCurrency()
+
+  // Pass user so the hook can sync with Nostr using admin's nsec/npub
   const {
     transactions, schoolName,
-    addTransaction, deleteTransaction,
+    addTransaction, deleteTransaction, editTransaction,
     categories, addCategory, deleteCategory,
+    budgets, updateBudget,
     stats, spentByCategory, chartData,
-  } = useTransactions()
+    syncing,
+  } = useTransactions(user)
 
   const userRole = user?.role || 'admin'
   const isAdmin  = userRole === 'admin'
@@ -73,16 +77,21 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
           ? <StudentProfile user={user} syncState={syncState} />
           : <Students user={user} userRole={userRole} dataVersion={dataVersion} />
 
-      // ── Student fees / payments (new) ─────────────────────────────
       case 'payments':
         return <Payments user={user} userRole={userRole} dataVersion={dataVersion} />
 
-      // ── School ledger (old Transactions, moved to More) ────────────
       case 'school-ledger':
         return (
           <Transactions
-            transactions={transactions} onAdd={addTransaction} onDelete={deleteTransaction}
-            fmt={fmt} categories={categories} onAddCategory={addCategory} onDeleteCategory={deleteCategory}
+            transactions={transactions}
+            onAdd={addTransaction}
+            onDelete={deleteTransaction}
+            onEdit={editTransaction}
+            fmt={fmt}
+            categories={categories}
+            onAddCategory={addCategory}
+            onDeleteCategory={deleteCategory}
+            syncing={syncing}
           />
         )
 
@@ -90,7 +99,16 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
         return <Attendance user={user} userRole={userRole} dataVersion={dataVersion} />
 
       case 'dashboard':
-        return <Dashboard stats={stats} chartData={chartData} transactions={transactions} fmt={fmt} />
+        return (
+          <Dashboard
+            stats={stats}
+            chartData={chartData}
+            transactions={transactions}
+            fmt={fmt}
+            syncing={syncing}
+            onNavigate={navigate}
+          />
+        )
 
       case 'teachers':
         return isAdmin ? <Teachers user={user} dataVersion={dataVersion} /> : null
@@ -102,10 +120,26 @@ export default function App({ user, syncState, dataVersion, onLogout, onUpdateUs
         return isAdmin ? <FeeStructure user={user} onBack={() => setMoreOpen(true)} /> : null
 
       case 'reports':
-        return <Reports transactions={transactions} stats={stats} spentByCategory={spentByCategory} schoolName={schoolName} fmt={fmt} />
+        return (
+          <Reports
+            transactions={transactions}
+            stats={stats}
+            spentByCategory={spentByCategory}
+            schoolName={schoolName}
+            fmt={fmt}
+          />
+        )
 
       case 'budget':
-        return <Budget spentByCategory={spentByCategory} fmt={fmt} />
+        return (
+          <Budget
+            spentByCategory={spentByCategory}
+            budgets={budgets}
+            updateBudget={updateBudget}
+            fmt={fmt}
+            categories={categories}
+          />
+        )
 
       case 'profile':
         return <AdminProfile user={user} syncState={syncState} onBack={() => setPage('settings')} onUpdateUser={onUpdateUser} />

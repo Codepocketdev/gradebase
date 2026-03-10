@@ -5,7 +5,7 @@
 
 import { SimplePool } from 'nostr-tools/pool'
 import { nip19, getPublicKey, finalizeEvent } from 'nostr-tools'
-import { saveSchool, getSchool, replaceAllTeachers, replaceAllClasses, replaceAllPayments, getTeachers, getClasses, getPayments, saveAttendance } from './db'
+import { saveSchool, getSchool, replaceAllTeachers, replaceAllClasses, replaceAllPayments, getTeachers, getClasses, getPayments, saveAttendance, replaceAllLedgerTransactions } from './db'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
@@ -215,8 +215,7 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ATTENDANCE SEED — fetch all attendance for given teacher pubkeys
-// Called on boot for all roles so attendance survives cache clears
+// ATTENDANCE SEED
 // ═══════════════════════════════════════════════════════════════════════
 export async function fetchAndSeedAttendance(teacherPks) {
   if (!teacherPks?.length) return
@@ -227,7 +226,6 @@ export async function fetchAndSeedAttendance(teacherPks) {
 
     console.log('[nostrSync] fetchAndSeedAttendance got', evs.length, 'events')
 
-    // Dedupe — newest per classId:date
     const latest = {}
     for (const ev of evs) {
       try {
@@ -249,9 +247,7 @@ export async function fetchAndSeedAttendance(teacherPks) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// PAYMENTS + FEES SEED — fetch all fee structures + payment entries
-// Called on boot/cache-clear for all roles so payments survive cache clears
-// adminNpub is the school admin who publishes all fee/payment events
+// PAYMENTS + FEES SEED
 // ═══════════════════════════════════════════════════════════════════════
 export async function fetchAndSeedPayments(adminNpub) {
   if (!adminNpub) return
@@ -265,9 +261,7 @@ export async function fetchAndSeedPayments(adminNpub) {
 
     console.log('[nostrSync] fetchAndSeedPayments got', evs.length, 'events')
 
-    // Dedupe fee structures by year+term — keep newest
     const latestFees = {}
-    // Dedupe payment entries by id — keep newest
     const latestPmts = {}
 
     for (const ev of evs) {
@@ -406,7 +400,6 @@ export function stopSync() {
   console.log('[nostrSync] stopped')
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // ATTENDANCE SYNC
 // ═══════════════════════════════════════════════════════════════════════
@@ -445,7 +438,6 @@ export async function fetchAttendanceForClass(teacherNpub, classId) {
     return []
   }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // FEES & PAYMENTS SYNC (v4)
@@ -543,6 +535,120 @@ export async function fetchPaymentEntries(adminNpub, { term, year, classId } = {
   } catch (e) {
     console.warn('[nostrSync] fetchPaymentEntries error:', e)
     return []
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// LEDGER SYNC
+// ═══════════════════════════════════════════════════════════════════════
+const TAG_LEDGER = 'gradebase-ledger'
+const P_LEDGER   = 'LEDGER:'
+
+export async function publishLedgerEntry(adminNsec, txn) {
+  const content = P_LEDGER + JSON.stringify(txn)
+  return publish(makeEvent(adminNsec, content, TAG_LEDGER))
+}
+
+export async function publishLedgerDelete(adminNsec, txnId) {
+  const content = P_LEDGER + JSON.stringify({ deleted: true, id: txnId, deletedAt: Date.now() })
+  return publish(makeEvent(adminNsec, content, TAG_LEDGER))
+}
+
+export async function fetchAndSeedLedger(adminNpub) {
+  if (!adminNpub) return []
+  try {
+    const adminPk = nip19.decode(adminNpub).data
+    const evs = await fetchEvents([
+      { kinds: [1], authors: [adminPk], '#t': [TAG_LEDGER], limit: 5000 }
+    ], 15000)
+    console.log('[nostrSync] fetchAndSeedLedger got', evs.length, 'events')
+    const byId = {}
+    for (const ev of evs) {
+      try {
+        const raw = ev.content.startsWith(P_LEDGER) ? ev.content.slice(P_LEDGER.length) : null
+        if (!raw) continue
+        const data = JSON.parse(raw)
+        if (!data.id) continue
+        if (!byId[data.id] || ev.created_at > byId[data.id].at)
+          byId[data.id] = { data, at: ev.created_at }
+      } catch {}
+    }
+    const txns = Object.values(byId)
+      .filter(({ data }) => !data.deleted)
+      .map(({ data }) => data)
+      .sort((a, b) => b.createdAt - a.createdAt)
+    await replaceAllLedgerTransactions(txns)
+    console.log('[nostrSync] fetchAndSeedLedger seeded', txns.length, 'transactions')
+    return txns
+  } catch (e) {
+    console.warn('[nostrSync] fetchAndSeedLedger error:', e)
+    return []
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BUDGETS SYNC
+// ═══════════════════════════════════════════════════════════════════════
+const TAG_BUDGETS = 'gradebase-budgets'
+const P_BUDGETS   = 'BUDGETS:'
+
+export async function publishBudgets(adminNsec, budgetsMap) {
+  const content = P_BUDGETS + JSON.stringify(budgetsMap)
+  return publish(makeEvent(adminNsec, content, TAG_BUDGETS))
+}
+
+export async function fetchAndSeedBudgets(adminNpub) {
+  if (!adminNpub) return null
+  try {
+    const adminPk = nip19.decode(adminNpub).data
+    const evs = await fetchEvents([
+      { kinds: [1], authors: [adminPk], '#t': [TAG_BUDGETS], limit: 10 }
+    ], 10000)
+    if (!evs.length) return null
+    const best = evs.sort((a, b) => b.created_at - a.created_at)[0]
+    const raw  = best.content.startsWith(P_BUDGETS) ? best.content.slice(P_BUDGETS.length) : null
+    if (!raw) return null
+    const map = JSON.parse(raw)
+    const { saveBudget } = await import('./db')
+    for (const [cat, amt] of Object.entries(map)) {
+      await saveBudget(cat, amt)
+    }
+    console.log('[nostrSync] fetchAndSeedBudgets seeded', Object.keys(map).length, 'budgets')
+    return map
+  } catch (e) {
+    console.warn('[nostrSync] fetchAndSeedBudgets error:', e)
+    return null
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CATEGORIES SYNC
+// ═══════════════════════════════════════════════════════════════════════
+const TAG_CATEGORIES = 'gradebase-categories'
+const P_CATEGORIES   = 'CATEGORIES:'
+
+export async function publishCategories(adminNsec, categoriesArray) {
+  const content = P_CATEGORIES + JSON.stringify(categoriesArray)
+  return publish(makeEvent(adminNsec, content, TAG_CATEGORIES))
+}
+
+export async function fetchAndSeedCategories(adminNpub) {
+  if (!adminNpub) return null
+  try {
+    const adminPk = nip19.decode(adminNpub).data
+    const evs = await fetchEvents([
+      { kinds: [1], authors: [adminPk], '#t': [TAG_CATEGORIES], limit: 10 }
+    ], 10000)
+    if (!evs.length) return null
+    const best = evs.sort((a, b) => b.created_at - a.created_at)[0]
+    const raw  = best.content.startsWith(P_CATEGORIES) ? best.content.slice(P_CATEGORIES.length) : null
+    if (!raw) return null
+    const cats = JSON.parse(raw)
+    console.log('[nostrSync] fetchAndSeedCategories seeded', cats.length, 'categories')
+    return cats
+  } catch (e) {
+    console.warn('[nostrSync] fetchAndSeedCategories error:', e)
+    return null
   }
 }
 

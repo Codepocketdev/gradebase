@@ -1,45 +1,432 @@
-.page { padding: 16px; position: relative; z-index: 1; }
+.page {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Overview cards ── */
+.overviewGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.overviewCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.overviewCard:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.overviewLabel {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+}
+
+.overviewValue {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  letter-spacing: -0.5px;
+  color: var(--text);
+  line-height: 1;
+}
+
+.overviewSub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── Overall bar ── */
+.overallBar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.overallBarLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.overallBarTrack {
+  width: 100%;
+  height: 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.overallBarFill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+/* ── Alert ── */
 .alertBox {
-  display: flex; align-items: center; gap: 10px;
-  padding: 12px 16px; margin-bottom: 20px;
-  background: rgba(255,209,102,0.08);
-  border: 1px solid rgba(255,209,102,0.2);
-  border-radius: 10px; font-size: 13px; color: var(--accent3);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(251,191,36,0.07);
+  border: 1px solid rgba(251,191,36,0.2);
+  border-radius: 10px;
+  font-size: 13px;
+  color: #fbbf24;
 }
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+/* ── Grid ── */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+/* ── Panels ── */
 .panel {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 16px; overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
 }
+
 .panelHeader {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
 }
-.panelTitle { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-.hint { font-size: 11px; color: var(--muted); }
-.body { padding: 20px; }
+
+.panelTitle {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.panelBody {
+  padding: 8px 20px;
+}
+
+/* ── Budget row ── */
+.budgetRow {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.budgetRow:last-child { border-bottom: none; }
+
+.rowTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.rowLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.catIcon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.catName {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.catSpent {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-top: 1px;
+}
+
+.rowRight {
+  flex-shrink: 0;
+}
+
+.budgetAmt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.budgetFmt {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.pencilBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  transition: color 0.15s, background 0.15s;
+}
+.pencilBtn:hover {
+  color: var(--accent);
+  background: rgba(79,255,176,0.08);
+}
+
+.editWrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editInput {
+  width: 100px;
+  padding: 5px 8px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.editBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+
+/* ── Progress bar ── */
+.barTrack {
+  width: 100%;
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.rowBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pctLabel {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.remaining {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--income, #4fffb0);
+}
+
+.over {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--expense, #ff6b6b);
+}
+
+/* ── Summary rows ── */
 .summaryRow {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 0; border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
 }
 .summaryRow:last-child { border-bottom: none; }
-.summaryLeft { display: flex; align-items: center; gap: 8px; }
-.summaryName { font-size: 13px; font-weight: 600; }
-.summaryRight { display: flex; align-items: center; gap: 10px; }
-.ok { font-size: 12px; font-family: var(--font-mono); color: var(--income); }
-.over { font-size: 12px; font-family: var(--font-mono); color: var(--expense); }
-.summaryPct { font-size: 11px; color: var(--muted); font-family: var(--font-mono); width: 36px; text-align: right; }
 
-@media (max-width: 768px) {
-  .page { padding: 12px; }
+.summaryLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.summaryName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.summaryRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ok {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--income, #4fffb0);
+}
+
+.summaryPct {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  width: 34px;
+  text-align: right;
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .overviewGrid { grid-template-columns: 1fr 1fr; }
   .grid { grid-template-columns: 1fr; }
 }
 
-.empty {
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  gap: 10px; padding: 48px 20px;
-  color: var(--muted); text-align: center;
-  font-size: 14px; font-weight: 600;
+@media (max-width: 480px) {
+  .page { padding: 12px; gap: 16px; }
+  .overviewGrid { grid-template-columns: 1fr 1fr; }
+  .overviewValue { font-size: 18px; }
 }
-.emptySub { font-size: 12px; font-weight: 400; color: var(--muted); max-width: 200px; }
+
+/* ── Fee collection rows ── */
+.feeTermRow {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.feeTermRow:last-child { border-bottom: none; }
+
+.feeTermTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.feeTermLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.feeTermPct {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.feeAmounts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.feeCollected {
+  font-size: 15px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--income, #4fffb0);
+}
+
+.feeDivider {
+  font-size: 13px;
+  color: var(--border);
+}
+
+.feeExpected {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+/* ── Fee overall wrap ── */
+.feeOverallWrap {
+  padding: 14px 0 10px;
+  border-bottom: none;
+}
+
+.feeOverallLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+/* ── Overall expense bar ── */
+.overallBarWrap {
+  padding: 14px 0 10px;
+}
+
+.overallBarLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+/* ── Divider ── */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0 8px;
+}
+
+/* ── Loading ── */
+.loadingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
+
