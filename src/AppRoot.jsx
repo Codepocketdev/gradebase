@@ -7,7 +7,11 @@ import {
   getTeachers, getClasses,
   replaceAllTeachers, replaceAllClasses, replaceAllPayments,
 } from './db'
-import { startSync, stopSync, fetchAndSeed, fetchAndSeedAttendance, fetchAndSeedPayments } from './nostrSync'
+import {
+  startSync, stopSync, fetchAndSeed,
+  fetchAndSeedAttendance, fetchAndSeedPayments,
+  setEncryptionContext,
+} from './nostrSync'
 import { useTheme } from './hooks/useTheme'
 import InstallPrompt from './components/InstallPrompt'
 
@@ -33,6 +37,22 @@ function RestoringScreen() {
   )
 }
 
+// ── Resolve adminNpub for any role ────────────────────────────────────
+async function resolveAdminNpub(role, pk, meta) {
+  if (role === 'admin') {
+    const { nip19 } = await import('nostr-tools')
+    return nip19.npubEncode(pk)
+  }
+  return meta.adminNpub || null
+}
+
+// ── Arm encryption: derive key from adminNpub ────────────────────
+function armEncryption(adminNpub) {
+  if (!adminNpub) return
+  setEncryptionContext(adminNpub)
+  console.log('[AppRoot] encryption armed')
+}
+
 export default function AppRoot() {
   useTheme()
   const [phase, setPhase]             = useState('splash')
@@ -56,13 +76,17 @@ export default function AppRoot() {
 
             let role = await detectRole(parsed.npub)
 
+            const meta = (() => {
+              try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
+            })()
+
+            // ── Arm encryption before any fetch ───────────────────────
+            const adminNpub = await resolveAdminNpub(parsed.role, parsed.pk, meta)
+            await armEncryption(adminNpub)
+
             // ── DB is cold — BLOCK on reseed so data is ready ─────────
             if (!role && parsed.role) {
               role = parsed.role
-              const meta = (() => {
-                try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
-              })()
-
               setRestoring(true)
               try {
                 const result = await fetchAndSeed({
@@ -117,6 +141,10 @@ export default function AppRoot() {
       try {
         let adminPk = null
 
+        const meta = (() => {
+          try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
+        })()
+
         if (user.role === 'admin') {
           adminPk = user.pk
         } else {
@@ -133,9 +161,9 @@ export default function AppRoot() {
           return
         }
 
-        const meta = (() => {
-          try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} }
-        })()
+        // ── Arm encryption before boot reseed ─────────────────────────
+        const adminNpub = await resolveAdminNpub(user.role, user.pk, meta)
+        await armEncryption(adminNpub)
 
         const bootReseed = async () => {
           if (user.role === 'admin') {
@@ -174,14 +202,25 @@ export default function AppRoot() {
               userPk:    user.pk,
               adminNpub: meta.adminNpub || undefined,
             }).catch(() => ({ found: false }))
+            // Always get adminNpub fresh from db after fetchAndSeed
+            const teacherSchool = await getSchool().catch(() => null)
+            const teacherAdminNpub = teacherSchool?.adminNpub || meta.adminNpub || null
+            if (teacherAdminNpub) {
+              // Re-arm encryption with confirmed adminNpub from db
+              armEncryption(teacherAdminNpub)
+              // Save to meta so future boots are instant
+              const m = (() => { try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} } })()
+              m.adminNpub = teacherAdminNpub
+              localStorage.setItem('gb_sync_meta', JSON.stringify(m))
+            }
             if (result?.found) {
               console.log('[AppRoot] teacher boot resync done')
               setDataVersion(v => v + 1)
             }
             await fetchAndSeedAttendance([user.pk])
             setDataVersion(v => v + 1)
-            if (meta.adminNpub) {
-              await fetchAndSeedPayments(meta.adminNpub)
+            if (teacherAdminNpub) {
+              await fetchAndSeedPayments(teacherAdminNpub)
               setDataVersion(v => v + 1)
             }
           }
@@ -197,6 +236,16 @@ export default function AppRoot() {
               if (result?.found) {
                 console.log('[AppRoot] student boot resync done')
                 setDataVersion(v => v + 1)
+                // Re-arm encryption now that school (with adminNpub) is in db
+                try {
+                  const school = await getSchool()
+                  if (school?.adminNpub) {
+                    await armEncryption(school.adminNpub)
+                    const m = (() => { try { return JSON.parse(localStorage.getItem('gb_sync_meta') || '{}') } catch { return {} } })()
+                    m.adminNpub = school.adminNpub
+                    localStorage.setItem('gb_sync_meta', JSON.stringify(m))
+                  }
+                } catch {}
               }
             }
             try {
@@ -223,7 +272,7 @@ export default function AppRoot() {
           }
         }
 
-        if (user.role === 'student') {
+        if (user.role === 'student' || user.role === 'teacher') {
           await bootReseed().catch(console.warn)
           try {
             const school = await getSchool()
@@ -264,7 +313,7 @@ export default function AppRoot() {
     return () => stopSync()
   }, [user, phase])
 
-  // ── Re-sync when tab becomes visible (phone wakeup / tab switch) ──
+  // ── Re-sync when tab becomes visible ──────────────────────────────
   useEffect(() => {
     if (!user || phase !== 'app') return
     const onVisible = () => {
@@ -287,7 +336,7 @@ export default function AppRoot() {
   }, [user, phase])
 
   // ── Auth complete ──────────────────────────────────────────────────
-  const handleAuth = useCallback((userData) => {
+  const handleAuth = useCallback(async (userData) => {
     localStorage.setItem('gb_auth', JSON.stringify(userData))
 
     const meta = (() => {
@@ -296,6 +345,10 @@ export default function AppRoot() {
     if (userData.adminNpub)   meta.adminNpub   = userData.adminNpub
     if (userData.teacherNpub) meta.teacherNpub = userData.teacherNpub
     localStorage.setItem('gb_sync_meta', JSON.stringify(meta))
+
+    // ── Arm encryption on fresh login ─────────────────────────────
+    const adminNpub = await resolveAdminNpub(userData.role, userData.pk, meta)
+    armEncryption(adminNpub)
 
     setUser(userData)
     setPhase('app')
@@ -308,6 +361,7 @@ export default function AppRoot() {
 
   const handleLogout = useCallback(() => {
     stopSync()
+    setEncryptionContext(null, null)  // clear encryption context on logout
     localStorage.removeItem('gb_auth')
     localStorage.removeItem('gb_sync_meta')
     setUser(null)

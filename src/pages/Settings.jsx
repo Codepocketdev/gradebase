@@ -3,11 +3,11 @@ import { useNostrProfile } from '../hooks/useNostrProfile'
 
 const syncColor = s => s === 'synced' ? 'var(--income)' : s === 'syncing' ? '#fbbf24' : '#ef4444'
 const syncLabel = s => s === 'synced' ? '● Live' : s === 'syncing' ? '◌ Syncing...' : '○ Offline'
+
 export default function Settings({ user, theme, toggleTheme, syncState, rate, rateLoading, onLogout, onNavigate }) {
   const isAdmin   = user?.role === 'admin'
   const isTeacher = user?.role === 'teacher'
 
-  // Live avatar + name — reads from cache instantly, no stale flash
   const { profile: liveProfile } = useNostrProfile(user?.pk)
   const liveAvatar = liveProfile?.picture || user?.avatar || ''
   const liveName   = liveProfile?.name || liveProfile?.display_name || user?.name || ''

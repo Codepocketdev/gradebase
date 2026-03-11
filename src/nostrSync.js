@@ -1,11 +1,12 @@
 /**
- * GradeBase Nostr Sync Engine v3
+ * GradeBase Nostr Sync Engine v4
  * Content format: 'PREFIX:' + JSON.stringify(data)
+ * Encryption: AES-256-CBC, key = sha256(adminNpub + salt)
  */
 
 import { SimplePool } from 'nostr-tools/pool'
 import { nip19, getPublicKey, finalizeEvent } from 'nostr-tools'
-import { saveSchool, getSchool, replaceAllTeachers, replaceAllClasses, replaceAllPayments, getTeachers, getClasses, getPayments, saveAttendance, replaceAllLedgerTransactions } from './db'
+import { saveSchool, getSchool, replaceAllTeachers, replaceAllClasses, replaceAllPayments, getTeachers, getClasses, getPayments, saveAttendance, replaceAllLedgerTransactions, getSalt, saveSalt } from './db'
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band']
 
@@ -16,6 +17,59 @@ let _pool = null
 function pool() { if (!_pool) _pool = new SimplePool(); return _pool }
 
 let _sub = null, _userNsec = null, _userPk = null, _adminPk = null
+
+// ── Encryption state ──────────────────────────────────────────────────
+let _adminNpub = null
+
+export function setEncryptionContext(adminNpub) {
+  _adminNpub = adminNpub
+}
+
+// ── Web Crypto helpers ────────────────────────────────────────────────
+async function sha256hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+export async function deriveSaltTag(adminNpub) {
+  return (await sha256hex('gbsalt' + adminNpub)).slice(0, 16)
+}
+
+async function deriveKey(adminNpub) {
+  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(adminNpub))
+  return crypto.subtle.importKey('raw', raw, { name: 'AES-CBC' }, false, ['encrypt', 'decrypt'])
+}
+
+async function encrypt(plaintext) {
+  if (!_adminNpub) return plaintext
+  try {
+    const key     = await deriveKey(_adminNpub)
+    const iv      = crypto.getRandomValues(new Uint8Array(16))
+    const enc     = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, key, new TextEncoder().encode(plaintext))
+    const ivB64   = btoa(String.fromCharCode(...iv))
+    const dataB64 = btoa(String.fromCharCode(...new Uint8Array(enc)))
+    return ivB64 + ':' + dataB64
+  } catch (e) {
+    console.warn('[nostrSync] encrypt error:', e)
+    return plaintext
+  }
+}
+
+async function decrypt(ciphertext) {
+  if (!_adminNpub) return ciphertext
+  if (!ciphertext.includes(':')) return ciphertext
+  const parts = ciphertext.split(':')
+  if (parts.length !== 2) return ciphertext
+  try {
+    const key       = await deriveKey(_adminNpub)
+    const iv        = Uint8Array.from(atob(parts[0]), c => c.charCodeAt(0))
+    const encrypted = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0))
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, encrypted)
+    return new TextDecoder().decode(decrypted)
+  } catch {
+    return ciphertext
+  }
+}
 
 export function skFromNsec(nsec) { return nip19.decode(nsec).data }
 export function pkFromNsec(nsec) { return getPublicKey(skFromNsec(nsec)) }
@@ -48,8 +102,9 @@ export async function uploadImage(nsec, file) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
-function makeEvent(nsec, content, tag) {
-  return finalizeEvent({ kind: 1, created_at: Math.floor(Date.now()/1000), tags: [['t','gradebase'],['t',tag]], content }, skFromNsec(nsec))
+async function makeEvent(nsec, content, tag) {
+  const encContent = await encrypt(content)
+  return finalizeEvent({ kind: 1, created_at: Math.floor(Date.now()/1000), tags: [['t','gradebase'],['t',tag]], content: encContent }, skFromNsec(nsec))
 }
 
 async function publish(event) {
@@ -77,8 +132,9 @@ async function handleEvent(ev, onUpdate) {
   const tag = ev.tags.find(t => t[0]==='t' && t[1].startsWith('gradebase-'))?.[1]
   if (!tag) return
   try {
+    const decrypted = await decrypt(ev.content)
     if (tag === TAG.SCHOOL) {
-      const raw = ev.content.startsWith(P.SCHOOL) ? ev.content.slice(P.SCHOOL.length) : ev.content
+      const raw = decrypted.startsWith(P.SCHOOL) ? decrypted.slice(P.SCHOOL.length) : decrypted
       try {
         const d = JSON.parse(raw)
         await saveSchool({ adminNpub: nip19.npubEncode(ev.pubkey), adminName: d.adminName, schoolName: d.name, about: d.about||'', avatar: d.avatar||'', createdAt: d.createdAt })
@@ -86,27 +142,27 @@ async function handleEvent(ev, onUpdate) {
       } catch (e) { console.warn('[nostrSync] school parse error:', e.message) }
     }
     else if (tag === TAG.TEACHERS) {
-      const raw = ev.content.startsWith(P.TEACHERS) ? ev.content.slice(P.TEACHERS.length) : ev.content
+      const raw = decrypted.startsWith(P.TEACHERS) ? decrypted.slice(P.TEACHERS.length) : decrypted
       try {
         const teachers = JSON.parse(raw)
         await replaceAllTeachers(teachers); console.log('[nostrSync] teachers saved:', teachers.length); onUpdate('teachers')
       } catch (e) { console.warn('[nostrSync] teachers parse error:', e.message) }
     }
     else if (tag === TAG.CLASSES) {
-      const raw = ev.content.startsWith(P.CLASSES) ? ev.content.slice(P.CLASSES.length) : ev.content
+      const raw = decrypted.startsWith(P.CLASSES) ? decrypted.slice(P.CLASSES.length) : decrypted
       try {
         const classes = JSON.parse(raw)
         await replaceAllClasses(classes); console.log('[nostrSync] classes saved:', classes.length); onUpdate('classes')
       } catch (e) { console.warn('[nostrSync] classes parse error:', e.message) }
     }
     else if (tag === TAG.PAYMENTS) {
-      const raw = ev.content.startsWith(P.PAYMENTS) ? ev.content.slice(P.PAYMENTS.length) : ev.content
+      const raw = decrypted.startsWith(P.PAYMENTS) ? decrypted.slice(P.PAYMENTS.length) : decrypted
       try {
         const payments = JSON.parse(raw)
         await replaceAllPayments(payments); console.log('[nostrSync] payments saved:', payments.length); onUpdate('payments')
       } catch (e) { console.warn('[nostrSync] payments parse error:', e.message) }
     }
-    else { console.warn('[nostrSync] unmatched tag/prefix:', tag, ev.content.slice(0,30)) }
+    else { console.warn('[nostrSync] unmatched tag/prefix:', tag, decrypted.slice(0,30)) }
   } catch (e) { console.warn('[nostrSync] handleEvent error:', tag, e.message) }
 }
 
@@ -115,7 +171,7 @@ export async function detectRole(npub) {
   try {
     const pk = nip19.decode(npub).data
     const evs = await fetchEvents([{ kinds: [1], authors: [pk], '#t': [TAG.SCHOOL], limit: 1 }], 8000)
-    if (evs.some(e => e.content.startsWith(P.SCHOOL) || e.content.startsWith('{'))) return 'admin'
+    if (evs.length) return 'admin'
     return null
   } catch { return null }
 }
@@ -127,6 +183,44 @@ export async function getNameForNpub(npub) {
     if (evs.length) { const p = JSON.parse(evs[0].content); return p.name || p.display_name || '' }
   } catch {}
   return ''
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SALT PUBLISH / FETCH
+// ═══════════════════════════════════════════════════════════════════════
+export async function publishSalt(adminNsec, adminNpub, salt) {
+  const saltTag = await deriveSaltTag(adminNpub)
+  const event   = finalizeEvent({
+    kind:       1,
+    created_at: Math.floor(Date.now() / 1000),
+    tags:       [['t', saltTag]],
+    content:    salt,
+  }, skFromNsec(adminNsec))
+  try {
+    await Promise.any(pool().publish(RELAYS, event))
+    console.log('[nostrSync] salt published, tag:', saltTag)
+    return true
+  } catch (e) {
+    console.warn('[nostrSync] publishSalt failed:', e)
+    return false
+  }
+}
+
+export async function fetchSalt(adminNpub) {
+  try {
+    const adminPk = nip19.decode(adminNpub).data
+    const saltTag = await deriveSaltTag(adminNpub)
+    const evs     = await fetchEvents([{
+      kinds: [1], authors: [adminPk], '#t': [saltTag], limit: 5
+    }], 10000)
+    if (!evs.length) return null
+    const salt = evs.sort((a, b) => b.created_at - a.created_at)[0].content
+    console.log('[nostrSync] salt fetched OK')
+    return salt
+  } catch (e) {
+    console.warn('[nostrSync] fetchSalt error:', e)
+    return null
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -159,13 +253,12 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
 
     if (!filters.length) return { found: false }
 
-    console.log('[nostrSync] fetchAndSeed start, role:', role, 'filters:', JSON.stringify(filters))
+    console.log('[nostrSync] fetchAndSeed start, role:', role)
     const events = await fetchEvents(filters, 15000)
     console.log('[nostrSync] fetchAndSeed got', events.length, 'events')
 
     if (!events.length) return { found: false, error: 'School not found. Check School ID and try again.' }
 
-    // Dedupe — newest per author+tag
     const latest = {}
     for (const ev of events) {
       const tag = ev.tags.find(t => t[0]==='t' && t[1].startsWith('gradebase-'))?.[1]
@@ -174,12 +267,10 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
       if (!latest[key] || ev.created_at > latest[key].created_at) latest[key] = ev
     }
 
-    // School first
     const evList      = Object.values(latest)
     const schoolFirst = [...evList.filter(e => e.tags.some(t => t[1]===TAG.SCHOOL)), ...evList.filter(e => !e.tags.some(t => t[1]===TAG.SCHOOL))]
     for (const ev of schoolFirst) await handleEvent(ev, () => {})
 
-    // ── Admin phase 2: fetch all teachers' classes ────────────────────
     if (role === 'admin') {
       const teachers   = await getTeachers()
       const teacherPks = teachers.map(t => { try { return nip19.decode(t.npub).data } catch { return null } }).filter(Boolean)
@@ -193,11 +284,9 @@ export async function fetchAndSeed({ role, userNsec, userPk, adminNpub, teacherN
       }
     }
 
-    // Verify
     if (role === 'teacher') {
       const teachers = await getTeachers()
       const myNpub   = nip19.npubEncode(userPk)
-      console.log('[nostrSync] teacher verify — myNpub:', myNpub.slice(0,20), '| list:', teachers.map(t=>t.npub?.slice(0,20)))
       if (!teachers.some(t => t.npub === myNpub)) return { found: false, error: 'You are not in this school teacher list. Ask admin to add you.' }
     }
 
@@ -229,7 +318,8 @@ export async function fetchAndSeedAttendance(teacherPks) {
     const latest = {}
     for (const ev of evs) {
       try {
-        const raw = ev.content.startsWith(P_ATTENDANCE) ? ev.content.slice(P_ATTENDANCE.length) : null
+        const decrypted = await decrypt(ev.content)
+        const raw = decrypted.startsWith(P_ATTENDANCE) ? decrypted.slice(P_ATTENDANCE.length) : null
         if (!raw) continue
         const record = JSON.parse(raw)
         const key    = `${record.classId}:${record.date}`
@@ -267,10 +357,11 @@ export async function fetchAndSeedPayments(adminNpub) {
     for (const ev of evs) {
       const tag = ev.tags.find(t => t[0]==='t' && (t[1]===TAG_FEES || t[1]===TAG_PAYMENT_ENTRY))?.[1]
       if (!tag) continue
+      const decrypted = await decrypt(ev.content)
 
       if (tag === TAG_FEES) {
         try {
-          const raw  = ev.content.startsWith(P_FEES) ? ev.content.slice(P_FEES.length) : null
+          const raw  = decrypted.startsWith(P_FEES) ? decrypted.slice(P_FEES.length) : null
           if (!raw) continue
           const data = JSON.parse(raw)
           const key  = `${data.year}-${data.term}`
@@ -282,7 +373,7 @@ export async function fetchAndSeedPayments(adminNpub) {
 
       if (tag === TAG_PAYMENT_ENTRY) {
         try {
-          const raw  = ev.content.startsWith(P_PAYMENT_ENTRY) ? ev.content.slice(P_PAYMENT_ENTRY.length) : null
+          const raw  = decrypted.startsWith(P_PAYMENT_ENTRY) ? decrypted.slice(P_PAYMENT_ENTRY.length) : null
           if (!raw) continue
           const data = JSON.parse(raw)
           if (data.deleted) continue
@@ -314,16 +405,16 @@ export async function fetchAndSeedPayments(adminNpub) {
 // ═══════════════════════════════════════════════════════════════════════
 export async function publishSchool(adminNsec, schoolData) {
   const sk = skFromNsec(adminNsec)
-  const schoolEv  = makeEvent(adminNsec, P.SCHOOL + JSON.stringify({ name: schoolData.schoolName, adminName: schoolData.adminName, about: schoolData.about||'', avatar: schoolData.avatar||'', app: 'gradebase', createdAt: schoolData.createdAt||Date.now() }), TAG.SCHOOL)
+  const schoolEv  = await makeEvent(adminNsec, P.SCHOOL + JSON.stringify({ name: schoolData.schoolName, adminName: schoolData.adminName, about: schoolData.about||'', avatar: schoolData.avatar||'', app: 'gradebase', createdAt: schoolData.createdAt||Date.now() }), TAG.SCHOOL)
   const profileEv = finalizeEvent({ kind: 0, created_at: Math.floor(Date.now()/1000), tags: [], content: JSON.stringify({ name: schoolData.adminName, about: schoolData.about||`Admin of ${schoolData.schoolName} on GradeBase`, picture: schoolData.avatar||'', website: 'https://gradebase.app' }) }, sk)
   try { await Promise.any(pool().publish(RELAYS, schoolEv));  console.log('[nostrSync] school kind:1 OK') }  catch (e) { console.warn('[nostrSync] school kind:1 FAIL', e) }
   try { await Promise.any(pool().publish(RELAYS, profileEv)); console.log('[nostrSync] school kind:0 OK') }  catch (e) { console.warn('[nostrSync] school kind:0 FAIL', e) }
   return true
 }
 
-export async function publishTeachers(adminNsec, teachers) { return publish(makeEvent(adminNsec, P.TEACHERS + JSON.stringify(teachers), TAG.TEACHERS)) }
-export async function publishClasses(teacherNsec, classes)  { return publish(makeEvent(teacherNsec, P.CLASSES  + JSON.stringify(classes),  TAG.CLASSES))  }
-export async function publishPayments(adminNsec, payments)  { return publish(makeEvent(adminNsec, P.PAYMENTS  + JSON.stringify(payments),  TAG.PAYMENTS)) }
+export async function publishTeachers(adminNsec, teachers)  { return publish(await makeEvent(adminNsec, P.TEACHERS + JSON.stringify(teachers), TAG.TEACHERS)) }
+export async function publishClasses(teacherNsec, classes)  { return publish(await makeEvent(teacherNsec, P.CLASSES  + JSON.stringify(classes),  TAG.CLASSES))  }
+export async function publishPayments(adminNsec, payments)  { return publish(await makeEvent(adminNsec, P.PAYMENTS  + JSON.stringify(payments),  TAG.PAYMENTS)) }
 
 // ═══════════════════════════════════════════════════════════════════════
 // SYNC WRAPPERS
@@ -407,9 +498,7 @@ const TAG_ATTENDANCE = 'gradebase-attendance'
 const P_ATTENDANCE   = 'ATTENDANCE:'
 
 export async function publishAttendance(teacherNsec, attendanceRecord) {
-  const content = P_ATTENDANCE + JSON.stringify(attendanceRecord)
-  const event   = makeEvent(teacherNsec, content, TAG_ATTENDANCE)
-  return publish(event)
+  return publish(await makeEvent(teacherNsec, P_ATTENDANCE + JSON.stringify(attendanceRecord), TAG_ATTENDANCE))
 }
 
 export async function fetchAttendanceForClass(teacherNpub, classId) {
@@ -422,7 +511,8 @@ export async function fetchAttendanceForClass(teacherNpub, classId) {
     const results = []
     for (const ev of evs) {
       try {
-        const raw    = ev.content.startsWith(P_ATTENDANCE) ? ev.content.slice(P_ATTENDANCE.length) : null
+        const decrypted = await decrypt(ev.content)
+        const raw    = decrypted.startsWith(P_ATTENDANCE) ? decrypted.slice(P_ATTENDANCE.length) : null
         if (!raw) continue
         const record = JSON.parse(raw)
         if (record.classId === classId) results.push({ ...record, nostrId: ev.id, createdAt: ev.created_at })
@@ -440,7 +530,7 @@ export async function fetchAttendanceForClass(teacherNpub, classId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// FEES & PAYMENTS SYNC (v4)
+// FEES & PAYMENTS SYNC
 // ═══════════════════════════════════════════════════════════════════════
 const TAG_FEES          = 'gradebase-fees'
 const TAG_PAYMENT_ENTRY = 'gradebase-payment-entry'
@@ -448,21 +538,15 @@ const P_FEES            = 'FEES:'
 const P_PAYMENT_ENTRY   = 'PAYMENT_ENTRY:'
 
 export async function publishFeeStructure(adminNsec, structure) {
-  const content = P_FEES + JSON.stringify(structure)
-  const event   = makeEvent(adminNsec, content, TAG_FEES)
-  return publish(event)
+  return publish(await makeEvent(adminNsec, P_FEES + JSON.stringify(structure), TAG_FEES))
 }
 
 export async function publishPaymentEntry(adminNsec, payment) {
-  const content = P_PAYMENT_ENTRY + JSON.stringify(payment)
-  const event   = makeEvent(adminNsec, content, TAG_PAYMENT_ENTRY)
-  return publish(event)
+  return publish(await makeEvent(adminNsec, P_PAYMENT_ENTRY + JSON.stringify(payment), TAG_PAYMENT_ENTRY))
 }
 
 export async function publishPaymentDelete(adminNsec, paymentId) {
-  const content = P_PAYMENT_ENTRY + JSON.stringify({ deleted: true, id: paymentId, deletedAt: Date.now() })
-  const event   = makeEvent(adminNsec, content, TAG_PAYMENT_ENTRY)
-  return publish(event)
+  return publish(await makeEvent(adminNsec, P_PAYMENT_ENTRY + JSON.stringify({ deleted: true, id: paymentId, deletedAt: Date.now() }), TAG_PAYMENT_ENTRY))
 }
 
 export async function fetchFeeStructure(adminNpub, year, term) {
@@ -472,7 +556,8 @@ export async function fetchFeeStructure(adminNpub, year, term) {
     let best = null
     for (const ev of evs) {
       try {
-        const raw = ev.content.startsWith(P_FEES) ? ev.content.slice(P_FEES.length) : null
+        const decrypted = await decrypt(ev.content)
+        const raw = decrypted.startsWith(P_FEES) ? decrypted.slice(P_FEES.length) : null
         if (!raw) continue
         const data = JSON.parse(raw)
         if (data.year === year && data.term === term) {
@@ -494,7 +579,8 @@ export async function fetchAllFeeStructures(adminNpub) {
     const byKey = {}
     for (const ev of evs) {
       try {
-        const raw = ev.content.startsWith(P_FEES) ? ev.content.slice(P_FEES.length) : null
+        const decrypted = await decrypt(ev.content)
+        const raw = decrypted.startsWith(P_FEES) ? decrypted.slice(P_FEES.length) : null
         if (!raw) continue
         const data = JSON.parse(raw)
         const key  = `${data.year}-${data.term}`
@@ -517,7 +603,8 @@ export async function fetchPaymentEntries(adminNpub, { term, year, classId } = {
     const payments = []
     for (const ev of evs) {
       try {
-        const raw = ev.content.startsWith(P_PAYMENT_ENTRY) ? ev.content.slice(P_PAYMENT_ENTRY.length) : null
+        const decrypted = await decrypt(ev.content)
+        const raw = decrypted.startsWith(P_PAYMENT_ENTRY) ? decrypted.slice(P_PAYMENT_ENTRY.length) : null
         if (!raw) continue
         const data = JSON.parse(raw)
         if (data.deleted) continue
@@ -545,13 +632,11 @@ const TAG_LEDGER = 'gradebase-ledger'
 const P_LEDGER   = 'LEDGER:'
 
 export async function publishLedgerEntry(adminNsec, txn) {
-  const content = P_LEDGER + JSON.stringify(txn)
-  return publish(makeEvent(adminNsec, content, TAG_LEDGER))
+  return publish(await makeEvent(adminNsec, P_LEDGER + JSON.stringify(txn), TAG_LEDGER))
 }
 
 export async function publishLedgerDelete(adminNsec, txnId) {
-  const content = P_LEDGER + JSON.stringify({ deleted: true, id: txnId, deletedAt: Date.now() })
-  return publish(makeEvent(adminNsec, content, TAG_LEDGER))
+  return publish(await makeEvent(adminNsec, P_LEDGER + JSON.stringify({ deleted: true, id: txnId, deletedAt: Date.now() }), TAG_LEDGER))
 }
 
 export async function fetchAndSeedLedger(adminNpub) {
@@ -565,7 +650,8 @@ export async function fetchAndSeedLedger(adminNpub) {
     const byId = {}
     for (const ev of evs) {
       try {
-        const raw = ev.content.startsWith(P_LEDGER) ? ev.content.slice(P_LEDGER.length) : null
+        const decrypted = await decrypt(ev.content)
+        const raw = decrypted.startsWith(P_LEDGER) ? decrypted.slice(P_LEDGER.length) : null
         if (!raw) continue
         const data = JSON.parse(raw)
         if (!data.id) continue
@@ -593,8 +679,7 @@ const TAG_BUDGETS = 'gradebase-budgets'
 const P_BUDGETS   = 'BUDGETS:'
 
 export async function publishBudgets(adminNsec, budgetsMap) {
-  const content = P_BUDGETS + JSON.stringify(budgetsMap)
-  return publish(makeEvent(adminNsec, content, TAG_BUDGETS))
+  return publish(await makeEvent(adminNsec, P_BUDGETS + JSON.stringify(budgetsMap), TAG_BUDGETS))
 }
 
 export async function fetchAndSeedBudgets(adminNpub) {
@@ -605,14 +690,13 @@ export async function fetchAndSeedBudgets(adminNpub) {
       { kinds: [1], authors: [adminPk], '#t': [TAG_BUDGETS], limit: 10 }
     ], 10000)
     if (!evs.length) return null
-    const best = evs.sort((a, b) => b.created_at - a.created_at)[0]
-    const raw  = best.content.startsWith(P_BUDGETS) ? best.content.slice(P_BUDGETS.length) : null
+    const best      = evs.sort((a, b) => b.created_at - a.created_at)[0]
+    const decrypted = await decrypt(best.content)
+    const raw       = decrypted.startsWith(P_BUDGETS) ? decrypted.slice(P_BUDGETS.length) : null
     if (!raw) return null
     const map = JSON.parse(raw)
     const { saveBudget } = await import('./db')
-    for (const [cat, amt] of Object.entries(map)) {
-      await saveBudget(cat, amt)
-    }
+    for (const [cat, amt] of Object.entries(map)) await saveBudget(cat, amt)
     console.log('[nostrSync] fetchAndSeedBudgets seeded', Object.keys(map).length, 'budgets')
     return map
   } catch (e) {
@@ -628,8 +712,7 @@ const TAG_CATEGORIES = 'gradebase-categories'
 const P_CATEGORIES   = 'CATEGORIES:'
 
 export async function publishCategories(adminNsec, categoriesArray) {
-  const content = P_CATEGORIES + JSON.stringify(categoriesArray)
-  return publish(makeEvent(adminNsec, content, TAG_CATEGORIES))
+  return publish(await makeEvent(adminNsec, P_CATEGORIES + JSON.stringify(categoriesArray), TAG_CATEGORIES))
 }
 
 export async function fetchAndSeedCategories(adminNpub) {
@@ -640,8 +723,9 @@ export async function fetchAndSeedCategories(adminNpub) {
       { kinds: [1], authors: [adminPk], '#t': [TAG_CATEGORIES], limit: 10 }
     ], 10000)
     if (!evs.length) return null
-    const best = evs.sort((a, b) => b.created_at - a.created_at)[0]
-    const raw  = best.content.startsWith(P_CATEGORIES) ? best.content.slice(P_CATEGORIES.length) : null
+    const best      = evs.sort((a, b) => b.created_at - a.created_at)[0]
+    const decrypted = await decrypt(best.content)
+    const raw       = decrypted.startsWith(P_CATEGORIES) ? decrypted.slice(P_CATEGORIES.length) : null
     if (!raw) return null
     const cats = JSON.parse(raw)
     console.log('[nostrSync] fetchAndSeedCategories seeded', cats.length, 'categories')

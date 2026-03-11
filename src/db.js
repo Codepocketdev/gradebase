@@ -1,10 +1,10 @@
 /**
  * GradeBase IndexedDB Cache
- * v6: added LEDGER + BUDGETS stores
+ * v7: added SALT store for encryption key
  */
 
 const DB_NAME    = 'gradebase'
-const DB_VERSION = 6
+const DB_VERSION = 7
 
 const STORES = {
   SCHOOL:     'school',
@@ -16,6 +16,7 @@ const STORES = {
   PROFILES:   'profiles',
   LEDGER:     'ledger',
   BUDGETS:    'budgets',
+  SALT:       'salt',
 }
 
 let _db = null
@@ -77,7 +78,6 @@ function openDB() {
       }
 
       // ── LEDGER (v6) ───────────────────────────────────────────────
-      // key: id (timestamp number)
       if (!db.objectStoreNames.contains(STORES.LEDGER)) {
         const l = db.createObjectStore(STORES.LEDGER, { keyPath: 'id' })
         l.createIndex('type',     'type',     { unique: false })
@@ -86,9 +86,13 @@ function openDB() {
       }
 
       // ── BUDGETS (v6) ──────────────────────────────────────────────
-      // key-value store: key = category name, value = { category, amount }
       if (!db.objectStoreNames.contains(STORES.BUDGETS)) {
         db.createObjectStore(STORES.BUDGETS, { keyPath: 'category' })
+      }
+
+      // ── SALT (v7) ─────────────────────────────────────────────────
+      if (!db.objectStoreNames.contains(STORES.SALT)) {
+        db.createObjectStore(STORES.SALT)
       }
     }
 
@@ -332,6 +336,17 @@ export async function getBudgetsMap() {
 export async function saveBudget(category, amount) {
   const { store } = await tx(STORES.BUDGETS, 'readwrite')
   return promisify(store.put({ category, amount }))
+}
+
+// ── SALT ──────────────────────────────────────────────────────────────
+export async function getSalt() {
+  const { store } = await tx(STORES.SALT)
+  return promisify(store.get('main'))
+}
+
+export async function saveSalt(salt) {
+  const { store } = await tx(STORES.SALT, 'readwrite')
+  return promisify(store.put(salt, 'main'))
 }
 
 // ── ROLE DETECTION ────────────────────────────────────────────────────
